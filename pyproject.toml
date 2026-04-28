@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pm-tuning-sandbox"
+version = "0.1.0"
+description = "PM tuning sandbox for d1-retention-analysis. One playbook, one command, Claude CLI under the hood."
+requires-python = ">=3.12"
+
+dependencies = [
+    "mcp>=1.0",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "pyyaml>=6.0",
+    "rich>=13.9",
+    "tabulate>=0.9",
+    "typer>=0.13",
+]
+
+[tool.hatch.build.targets.wheel]
+bypass-selection = true

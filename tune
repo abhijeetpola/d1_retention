@@ -1,0 +1,779 @@
+#!/usr/bin/env -S uv run python
+"""tune — the only command PMs run.
+
+Workflow:
+  1. Read d1-retention-analysis.md (PM-edited prose)
+  2. Read data/sheets/d1_retention.csv, filter + slice per config.yaml,
+     render as a Markdown table
+  3. Build the user message: prose + inlined table + footer telling the LLM
+     about list_files / load_file
+  4. Write a per-run MCP config pointing at tune_mcp.py
+  5. Launch:  claude -p --output-format json --mcp-config <cfg>
+              --allowed-tools mcp__sandbox__list_files mcp__sandbox__load_file
+              --system-prompt <preamble>  <  combined_user_message
+  6. Write the response to outputs/<date>-d1_retention.md (+ outputs/latest.md symlink)
+  7. open outputs/latest.md
+
+Usage:
+  ./tune                  Run the analysis end-to-end.
+  ./tune doctor           Verify environment (claude installed, logged in).
+  ./tune --dry-run        Build the prompt and print it; do NOT call claude.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import typer
+import yaml
+from rich.console import Console
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
+from rich.rule import Rule
+
+app = typer.Typer(no_args_is_help=False, add_completion=False, rich_markup_mode="rich")
+console = Console()
+err_console = Console(stderr=True)
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+PLAYBOOK_PATH = PROJECT_ROOT / "d1-retention-analysis.md"
+SHEET_PATH = PROJECT_ROOT / "data" / "sheets" / "d1_retention.csv"
+CONFIG_PATH = PROJECT_ROOT / "config.yaml"
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"
+MCP_SERVER_PATH = PROJECT_ROOT / "tune_mcp.py"
+
+ALLOWED_MCP_TOOLS = " ".join(
+    f"mcp__sandbox__{name}" for name in ("list_files", "load_file")
+)
+
+
+# ---------------------------------------------------------------------------
+# main entry points
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+def run(
+    query: list[str] = typer.Argument(
+        None,
+        help=(
+            "Optional ad-hoc question to send alongside the playbook prose. "
+            "Append it as words after ./tune (quote it for safety)."
+        ),
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Build the prompt and print it; do NOT call claude."
+    ),
+    no_open: bool = typer.Option(
+        False,
+        "--no-open",
+        help="Do not auto-open the report in the default Markdown viewer.",
+    ),
+    quiet: bool = typer.Option(
+        False,
+        "--quiet",
+        "-q",
+        help="Do not render the report inline in the terminal (file output only).",
+    ),
+) -> None:
+    """Run the analysis end-to-end. An optional one-shot question may follow."""
+    config = _load_config()
+    _ensure_environment(claude_required=not dry_run)
+
+    pm_query = " ".join(query).strip() if query else ""
+    prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
+    inlined_text, slice_summary = _render_inlined_sheet(config["inline_data"])
+    user_message = _build_user_message(
+        prose=prose, inlined_sheet=inlined_text, pm_query=pm_query
+    )
+
+    if dry_run:
+        console.print("[bold]── prompt preview (dry run) ──[/bold]\n")
+        console.print(user_message)
+        console.print(f"\n[dim]System preamble: {len(config['system_preamble'])} chars[/dim]")
+        console.print(f"[dim]User message:    {len(user_message)} chars[/dim]")
+        if pm_query:
+            console.print(f"[dim]PM query:        {pm_query!r}[/dim]")
+        return
+
+    _print_preflight(
+        prose=prose,
+        slice_summary=slice_summary,
+        docs=_list_docs(),
+        model_display=config.get("model_display_name", config["model"]),
+        pm_query=pm_query,
+    )
+
+    output_path = _resolve_output_path(config["output_template"])
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[cyan]Claude reasoning…[/cyan]"),
+        TimeElapsedColumn(),
+        console=console,
+        transient=True,  # clear the spinner line once done
+    ) as progress:
+        progress.add_task("reasoning", total=None)
+        result = _invoke_claude(
+            system_prompt=config["system_preamble"],
+            user_message=user_message,
+            model=config["model"],
+            progress=progress,
+        )
+
+    output_path.write_text(result["text"], encoding="utf-8")
+    _update_latest_symlink(output_path)
+
+    if not quiet:
+        console.print()
+        console.print(Rule("[bold cyan]Report[/bold cyan]", style="cyan"))
+        console.print()
+        console.print(Markdown(result["text"]))
+        console.print()
+        console.print(Rule(style="cyan"))
+
+    console.print()
+    console.print(
+        f"[bold green]✓ Done[/bold green] in {result['duration_ms']/1000:.1f}s "
+        f"· ${result['cost_usd']:.4f} "
+        f"· {result['input_tokens']:,} in / {result['output_tokens']:,} out tokens"
+    )
+    console.print(f"  Report:  [cyan]{output_path}[/cyan]")
+    console.print(f"  Latest:  [cyan]{OUTPUTS_DIR / 'latest.md'}[/cyan]")
+    console.print()
+
+    # Auto-open in default Markdown viewer (macOS).
+    if not no_open:
+        try:
+            subprocess.run(["open", str(OUTPUTS_DIR / "latest.md")], check=False)
+        except FileNotFoundError:
+            pass  # `open` not available; PM can read manually
+
+
+@app.command()
+def doctor() -> None:
+    """Run every preflight check: Python, deps, files, MCP server, claude CLI."""
+    _run_doctor_checks()
+    console.print("[bold green]✓ doctor: all checks passed[/bold green]")
+
+
+def _run_doctor_checks() -> None:
+    """Extended preflight for ./tune doctor — verifies deps, imports, files, CLI.
+
+    The lighter `_ensure_environment` is what runs on every ./tune call. This
+    function is heavier but only runs on demand from `doctor`.
+    """
+    console.print("[bold]Environment[/bold]")
+
+    # 1. Python version (we use 3.11+ syntax: tuple[str, ...] | None, etc.)
+    py = sys.version_info
+    if py < (3, 11):
+        _die(f"Python ≥ 3.11 required (have {py.major}.{py.minor}.{py.micro})")
+    console.print(f"  [green]✓[/green] Python {py.major}.{py.minor}.{py.micro}")
+
+    # 2. uv on PATH (the shebang relies on it).
+    if shutil.which("uv") is None:
+        _die("`uv` not found on PATH. Install: https://docs.astral.sh/uv/")
+    console.print("  [green]✓[/green] uv present on PATH")
+
+    # 3. Python dependencies importable (with versions).
+    import importlib.metadata as _md
+
+    deps = ("mcp", "PyYAML", "pandas", "rich", "typer", "openpyxl", "tabulate")
+    for spec in deps:
+        try:
+            ver = _md.version(spec)
+            console.print(f"  [green]✓[/green] {spec} {ver}")
+        except _md.PackageNotFoundError:
+            _die(f"{spec} not installed in this venv. Run: uv sync")
+
+    # 4. MCP server smoke-imports cleanly (no syntax errors, no dep failures).
+    if not MCP_SERVER_PATH.exists():
+        _die(f"MCP server file missing: {MCP_SERVER_PATH}")
+    try:
+        from importlib.machinery import SourceFileLoader
+
+        SourceFileLoader("_tune_mcp_doctor", str(MCP_SERVER_PATH)).load_module()
+        console.print(f"  [green]✓[/green] {MCP_SERVER_PATH.name} imports cleanly")
+    except Exception as e:
+        _die(f"{MCP_SERVER_PATH.name} failed to import: {type(e).__name__}: {e}")
+
+    # 5. config.yaml parses and has required keys.
+    console.print("[bold]Project files[/bold]")
+    if not CONFIG_PATH.exists():
+        _die(f"config not found: {CONFIG_PATH}")
+    try:
+        cfg = yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        _die(f"config.yaml malformed: {e}")
+    if not isinstance(cfg, dict):
+        _die("config.yaml does not contain a top-level mapping")
+    required = {"model", "system_preamble", "inline_data", "output_template"}
+    missing = required - set(cfg.keys())
+    if missing:
+        _die(f"config.yaml missing keys: {sorted(missing)}")
+    console.print(
+        f"  [green]✓[/green] config.yaml parses; model={cfg['model']}"
+    )
+
+    # 6. Playbook present.
+    if not PLAYBOOK_PATH.exists():
+        _die(f"playbook not found: {PLAYBOOK_PATH}")
+    word_count = len(PLAYBOOK_PATH.read_text(encoding="utf-8").split())
+    console.print(
+        f"  [green]✓[/green] playbook present: {PLAYBOOK_PATH.name} "
+        f"({word_count:,} words)"
+    )
+
+    # 7. Sheet present.
+    if not SHEET_PATH.exists():
+        _die(
+            f"sheet not found: {SHEET_PATH}\n"
+            "  An engineer drops the source CSV into data/sheets/ once."
+        )
+    rows = max(0, sum(1 for _ in SHEET_PATH.open()) - 1)
+    console.print(
+        f"  [green]✓[/green] sheet present: {SHEET_PATH.name} ({rows:,} rows)"
+    )
+
+    # 8. data/docs/ folder.
+    docs_dir = PROJECT_ROOT / "data" / "docs"
+    if not docs_dir.exists():
+        _die(f"missing folder: {docs_dir}")
+    docs = _list_docs()
+    docs_label = ", ".join(docs) if docs else "empty"
+    console.print(
+        f"  [green]✓[/green] data/docs/ present ({len(docs)} files): {docs_label}"
+    )
+
+    # 9. outputs/ writable (create if absent).
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+    if not os.access(OUTPUTS_DIR, os.W_OK):
+        _die(f"outputs/ not writable: {OUTPUTS_DIR}")
+    console.print(f"  [green]✓[/green] outputs/ writable")
+
+    # 10. Claude CLI on PATH.
+    console.print("[bold]External tools[/bold]")
+    if shutil.which("claude") is None:
+        _die(
+            "`claude` CLI not found on PATH.\n"
+            "  Install Claude Code (https://claude.com/code) and run `claude` once "
+            "to log in."
+        )
+    try:
+        proc = subprocess.run(
+            ["claude", "--version"], capture_output=True, text=True, timeout=10
+        )
+        version_line = (proc.stdout.strip() or proc.stderr.strip()).splitlines()[0]
+        console.print(f"  [green]✓[/green] claude CLI: {version_line}")
+    except (subprocess.TimeoutExpired, FileNotFoundError, IndexError):
+        console.print("  [green]✓[/green] claude CLI present on PATH")
+
+    console.print(
+        "[dim]  Note: doctor cannot verify whether `claude` is logged in. "
+        "If a real run fails with an auth error, run `claude` interactively once.[/dim]"
+    )
+
+
+# ---------------------------------------------------------------------------
+# implementation
+# ---------------------------------------------------------------------------
+
+
+def _load_config() -> dict[str, Any]:
+    if not CONFIG_PATH.exists():
+        _die(f"config not found: {CONFIG_PATH}")
+    return yaml.safe_load(CONFIG_PATH.read_text(encoding="utf-8"))
+
+
+def _ensure_environment(*, claude_required: bool, verbose: bool = False) -> None:
+    if not PLAYBOOK_PATH.exists():
+        _die(f"playbook not found: {PLAYBOOK_PATH}")
+    if verbose:
+        console.print(f"[green]✓[/green] playbook present: {PLAYBOOK_PATH.name}")
+
+    if not SHEET_PATH.exists():
+        _die(
+            f"sheet not found: {SHEET_PATH}\n"
+            "  An engineer drops the source CSV into data/sheets/ once."
+        )
+    if verbose:
+        rows = sum(1 for _ in SHEET_PATH.open()) - 1
+        console.print(f"[green]✓[/green] sheet present: {SHEET_PATH.name} ({rows:,} rows)")
+
+    if not MCP_SERVER_PATH.exists():
+        _die(f"MCP server missing: {MCP_SERVER_PATH}")
+    if verbose:
+        console.print(f"[green]✓[/green] MCP server present: {MCP_SERVER_PATH.name}")
+
+    if claude_required:
+        if shutil.which("claude") is None:
+            _die(
+                "`claude` CLI not found on PATH.\n"
+                "  Install Claude Code (https://claude.com/code) and run `claude` once "
+                "to log in."
+            )
+        if verbose:
+            console.print("[green]✓[/green] claude CLI present on PATH")
+
+
+def _render_inlined_sheet(inline_cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Read the sheet, filter to acquisition_source, take last N days, project columns.
+
+    Returns (markdown_text, summary_dict). summary_dict has rows/cols/days/source and
+    full-sheet stats (total_rows, total_cols, min_date, max_date) for the pre-flight line.
+    """
+    df = pd.read_csv(SHEET_PATH, thousands=",", low_memory=False)
+
+    # Capture full-sheet stats before any filtering.
+    full_total_rows = len(df)
+    full_total_cols = len(df.columns)
+
+    # Coerce date and sort ascending.
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df = df.dropna(subset=["date"]).sort_values("date")
+
+    full_min_date = df["date"].min().strftime("%Y-%m-%d") if len(df) else "?"
+    full_max_date = df["date"].max().strftime("%Y-%m-%d") if len(df) else "?"
+
+    # Filter by acquisition_source.
+    src_filter = inline_cfg["acquisition_source"]
+    if isinstance(src_filter, str):
+        src_filter = [src_filter]
+    df = df[df["acquisition_source"].isin(src_filter)]
+
+    # Latest N days.
+    days = int(inline_cfg.get("days", 180))
+    if days > 0:
+        cutoff = df["date"].max() - pd.Timedelta(days=days - 1)
+        df = df[df["date"] >= cutoff]
+
+    # Project columns.
+    cols = inline_cfg["columns"]
+    available = [c for c in cols if c in df.columns]
+    df = df[available].copy()
+
+    # Make date column readable.
+    if "date" in df.columns:
+        df["date"] = df["date"].dt.strftime("%Y-%m-%d")
+
+    summary_text = (
+        f"_Inlined slice: {len(df):,} rows × {len(df.columns)} cols. "
+        f"acquisition_source={src_filter}. "
+        f"Last {days} days only._\n\n"
+        f"_For per-acquisition-source breakdown or older history, call "
+        f"`load_file('sheets/d1_retention.csv')`._\n\n"
+    )
+    summary_dict = {
+        "rows": len(df),
+        "cols": len(df.columns),
+        "days": days,
+        "source": ",".join(src_filter),
+        "full_total_rows": full_total_rows,
+        "full_total_cols": full_total_cols,
+        "full_min_date": full_min_date,
+        "full_max_date": full_max_date,
+    }
+    return summary_text + df.to_markdown(index=False), summary_dict
+
+
+def _list_docs() -> list[str]:
+    """Filenames of any docs the PM has dropped into data/docs/."""
+    docs_dir = PROJECT_ROOT / "data" / "docs"
+    if not docs_dir.exists():
+        return []
+    return sorted(
+        p.name
+        for p in docs_dir.iterdir()
+        if p.is_file() and not p.name.startswith(".")
+    )
+
+
+def _print_preflight(
+    *,
+    prose: str,
+    slice_summary: dict[str, Any],
+    docs: list[str],
+    model_display: str,
+    pm_query: str,
+) -> None:
+    """Layer 1 — static info shown before Claude is invoked."""
+    word_count = len(prose.split())
+    docs_line = ", ".join(docs) if docs else "none yet"
+
+    console.print()
+    console.print(
+        f"[bold]Playbook:[/bold]   [cyan]{PLAYBOOK_PATH.name}[/cyan] "
+        f"[dim]({word_count:,} words)[/dim]"
+    )
+    console.print(
+        f"[bold]Data slice:[/bold] last {slice_summary['days']} days × "
+        f"{slice_summary['cols']} cols × acquisition_source={slice_summary['source']} "
+        f"[dim]({slice_summary['rows']:,} rows)[/dim]"
+    )
+    console.print(
+        f"[bold]Full sheet:[/bold] [dim]{slice_summary['full_total_rows']:,} rows × "
+        f"{slice_summary['full_total_cols']} cols "
+        f"({slice_summary['full_min_date']} → {slice_summary['full_max_date']}); "
+        f"available on demand via load_file[/dim]"
+    )
+    console.print(f"[bold]Extra docs:[/bold] [dim]{docs_line}[/dim]")
+    console.print(f"[bold]Model:[/bold]      [dim]{model_display}[/dim]")
+    if pm_query:
+        console.print()
+        console.print(
+            Panel(pm_query, title="PM query for this run", border_style="dim")
+        )
+    console.print()
+
+
+def _build_user_message(*, prose: str, inlined_sheet: str, pm_query: str = "") -> str:
+    parts = [
+        "# PM playbook (the prose to follow)",
+        "",
+        prose.strip(),
+        "",
+        "---",
+        "",
+        "# Pre-loaded data",
+        "",
+        inlined_sheet,
+        "",
+        "---",
+        "",
+        "# Tools you have available",
+        "",
+        "- `list_files()` — see all files under data/",
+        "- `load_file('docs/<file.md>')` — load a context document",
+        "- `load_file('sheets/d1_retention.csv')` — load the FULL sheet "
+        "(all acquisition sources, all dates) if you want more granular analysis",
+    ]
+    if pm_query:
+        parts.extend(
+            [
+                "",
+                "---",
+                "",
+                "# PM's specific question for THIS run",
+                "",
+                "The playbook above sets the framing. For this particular run, the PM has "
+                "added an extra question they want you to focus on. Treat it as the "
+                "primary lens for your report — answer it directly in the TL;DR and "
+                "refer back to it explicitly in your verdicts and findings.",
+                "",
+                f"> {pm_query}",
+            ]
+        )
+    parts.extend(["", "Begin your investigation."])
+    return "\n".join(parts)
+
+
+def _invoke_claude(
+    *,
+    system_prompt: str,
+    user_message: str,
+    model: str,
+    progress: Progress | None = None,
+) -> dict[str, Any]:
+    """Launch claude -p in stream-json mode and translate live events into status lines."""
+    mcp_config = {
+        "mcpServers": {
+            "sandbox": {
+                "command": sys.executable,
+                "args": [str(MCP_SERVER_PATH)],
+            }
+        }
+    }
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".json", delete=False, dir=str(PROJECT_ROOT)
+    ) as f:
+        mcp_config_path = Path(f.name)
+        json.dump(mcp_config, f)
+
+    state: dict[str, Any] = {
+        "result": None,
+        # Dedupe: stream-json may emit the same tool_use both as a top-level
+        # `assistant` event and inside `stream_event` envelopes. Use the tool_use
+        # id (when present) to print each call exactly once.
+        "seen_tool_use_ids": set(),
+    }
+    stderr_text = ""
+
+    try:
+        cmd = [
+            "claude",
+            "-p",
+            "--output-format", "stream-json",
+            "--verbose",
+            "--model", model,
+            "--mcp-config", str(mcp_config_path),
+            "--allowed-tools", ALLOWED_MCP_TOOLS,
+            "--system-prompt", system_prompt,
+        ]
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,  # line-buffered
+        )
+        assert proc.stdin is not None and proc.stdout is not None and proc.stderr is not None
+
+        # Send the prompt and close stdin so claude knows we're done.
+        proc.stdin.write(user_message)
+        proc.stdin.close()
+
+        for raw_line in proc.stdout:
+            line = raw_line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            try:
+                _handle_stream_event(event, progress, state)
+            except Exception:
+                # Never let a parsing quirk kill the whole run.
+                continue
+
+        proc.wait()
+        stderr_text = proc.stderr.read() or ""
+
+        if proc.returncode != 0:
+            _die(
+                f"claude exited {proc.returncode}\n  "
+                f"stderr (last 800 chars): {stderr_text[-800:]}"
+            )
+    finally:
+        mcp_config_path.unlink(missing_ok=True)
+
+    payload = state["result"]
+    if payload is None:
+        _die(
+            "claude finished without emitting a final result event.\n  "
+            f"stderr (last 800 chars): {stderr_text[-800:]}"
+        )
+
+    if payload.get("is_error"):
+        _die(f"claude reported error: {payload.get('result', '<no detail>')}")
+
+    usage = payload.get("usage", {}) or {}
+    return {
+        "text": payload.get("result", "") or "",
+        "duration_ms": int(payload.get("duration_ms", 0)),
+        "cost_usd": float(payload.get("total_cost_usd", 0.0) or 0.0),
+        "input_tokens": int(usage.get("input_tokens", 0) or 0),
+        "output_tokens": int(usage.get("output_tokens", 0) or 0),
+    }
+
+
+# ---------------------------------------------------------------------------
+# stream-json event handling — Layer 2 (live activity feed)
+# ---------------------------------------------------------------------------
+
+
+def _handle_stream_event(
+    event: dict[str, Any], progress: Progress | None, state: dict[str, Any]
+) -> None:
+    """Translate one stream-json line into a status update (and capture the result)."""
+    etype = event.get("type")
+
+    if etype == "result":
+        state["result"] = event
+        return
+
+    if etype == "assistant":
+        # Top-level assistant message with finalized content blocks.
+        message = event.get("message") or {}
+        for block in message.get("content") or []:
+            if block.get("type") == "tool_use":
+                tu_id = block.get("id") or ""
+                if tu_id and tu_id in state["seen_tool_use_ids"]:
+                    continue
+                if tu_id:
+                    state["seen_tool_use_ids"].add(tu_id)
+                _print_tool_call(
+                    progress,
+                    block.get("name", ""),
+                    block.get("input") or {},
+                )
+        return
+
+    if etype == "user":
+        # Tool result emitted as a "user" turn.
+        message = event.get("message") or {}
+        for block in message.get("content") or []:
+            if block.get("type") == "tool_result":
+                _print_tool_result(progress, block)
+        return
+
+    if etype == "stream_event":
+        # Raw API streaming events. Only act on content_block_start with a
+        # complete tool_use payload — partial input deltas are too noisy to surface.
+        inner = event.get("event") or {}
+        if inner.get("type") == "content_block_start":
+            cb = inner.get("content_block") or {}
+            if cb.get("type") == "tool_use":
+                tu_id = cb.get("id") or ""
+                if tu_id and tu_id in state["seen_tool_use_ids"]:
+                    return
+                if tu_id:
+                    state["seen_tool_use_ids"].add(tu_id)
+                _print_tool_call(progress, cb.get("name", ""), cb.get("input") or {})
+        return
+
+    # `system` (init) and any unknown types: ignore silently.
+
+
+def _print_tool_call(
+    progress: Progress | None, tool_name: str, tool_input: dict[str, Any]
+) -> None:
+    if tool_name.endswith("__list_files"):
+        line = "→ Listing files available in data/..."
+    elif tool_name.endswith("__load_file"):
+        filename = (tool_input or {}).get("filename") or "<unknown>"
+        if filename.startswith("sheets/"):
+            line = f"→ Loading the FULL sheet ({filename}) for per-source detail..."
+        elif filename.startswith("docs/"):
+            line = f"→ Loading {filename} for further analysis..."
+        else:
+            line = f"→ Loading {filename}..."
+    else:
+        line = f"→ {tool_name}({tool_input})"
+    _activity_print(progress, f"[dim]{line}[/dim]")
+
+
+def _print_tool_result(progress: Progress | None, block: dict[str, Any]) -> None:
+    raw = block.get("content")
+    text = ""
+    if isinstance(raw, str):
+        text = raw
+    elif isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, dict) and item.get("type") == "text":
+                text += item.get("text", "")
+            elif isinstance(item, str):
+                text += item
+
+    summary = _summarize_tool_result(text)
+    if summary.startswith("(failed"):
+        _activity_print(progress, f"[red]← {summary}[/red]")
+    else:
+        _activity_print(progress, f"[dim]← {summary}[/dim]")
+
+
+_ROWS_COLS_RE = re.compile(r"(\d{1,3}(?:,\d{3})*|\d+)\s*rows\s*×\s*(\d+)\s*columns?")
+_ERROR_RE = re.compile(r'"error"\s*:\s*"([^"]+)"')
+_FILES_RE = re.compile(r'"files"\s*:\s*\[([^\]]*)\]', re.DOTALL)
+_QUOTED_STR_RE = re.compile(r'"[^"]*"')
+
+
+def _summarize_tool_result(text: str) -> str:
+    """Best-effort one-line summary of an MCP tool response."""
+    if not text:
+        return "Loaded"
+
+    # Try a clean JSON parse first — our tools return well-formed JSON dicts.
+    parsed: Any = None
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError):
+        parsed = None
+
+    if isinstance(parsed, dict):
+        if parsed.get("ok") is False:
+            err = str(parsed.get("error") or "unknown error")
+            return f"(failed: {err[:80]})"
+        if "files" in parsed and isinstance(parsed["files"], list):
+            n = len(parsed["files"])
+            return f"Found {n} file{'' if n == 1 else 's'}"
+        content = parsed.get("content")
+        if isinstance(content, str):
+            m = _ROWS_COLS_RE.search(content)
+            if m:
+                return f"Loaded ({m.group(1)} rows × {m.group(2)} cols)"
+            return f"Loaded ({len(content):,} chars)"
+
+    # Fallback regex path for non-JSON or wrapped payloads.
+    if '"ok": false' in text or '"ok":false' in text:
+        m = _ERROR_RE.search(text)
+        err = m.group(1) if m else "unknown error"
+        return f"(failed: {err[:80]})"
+
+    m = _FILES_RE.search(text)
+    if m:
+        body = m.group(1).strip()
+        count = 0 if not body else len(_QUOTED_STR_RE.findall(body))
+        return f"Found {count} file{'' if count == 1 else 's'}"
+
+    m = _ROWS_COLS_RE.search(text)
+    if m:
+        return f"Loaded ({m.group(1)} rows × {m.group(2)} cols)"
+
+    return "Loaded"
+
+
+def _activity_print(progress: Progress | None, message: str) -> None:
+    """Print a live status line without disturbing the spinner."""
+    target = progress.console if progress is not None else console
+    target.print(message)
+
+
+def _resolve_output_path(template: str) -> Path:
+    now = datetime.now()
+    rendered = (
+        template.replace("{date}", now.strftime("%Y-%m-%d"))
+        .replace("{time}", now.strftime("%H%M%S"))
+        .replace("{basename}", PLAYBOOK_PATH.stem)
+    )
+    return PROJECT_ROOT / rendered
+
+
+def _update_latest_symlink(target: Path) -> None:
+    latest = OUTPUTS_DIR / "latest.md"
+    if latest.exists() or latest.is_symlink():
+        latest.unlink()
+    latest.symlink_to(target.name)  # relative link inside outputs/
+
+
+def _die(message: str, extra: str = "") -> None:
+    err_console.print(f"[bold red]✗[/bold red] {message}")
+    if extra:
+        err_console.print(extra)
+    raise typer.Exit(code=1)
+
+
+_KNOWN_COMMANDS = {"run", "doctor"}
+
+
+def main() -> None:
+    # If invoked with no command, or with a flag, or with a positional arg that
+    # is NOT a known subcommand, default to `run`. This lets PMs type either:
+    #   ./tune
+    #   ./tune --dry-run
+    #   ./tune doctor
+    #   ./tune "Why did D1 dip on March 8?"
+    #   ./tune why did D1 dip on March 8
+    if len(sys.argv) == 1:
+        sys.argv.insert(1, "run")
+    elif sys.argv[1].startswith("-") or sys.argv[1] not in _KNOWN_COMMANDS:
+        sys.argv.insert(1, "run")
+    app()
+
+
+if __name__ == "__main__":
+    main()

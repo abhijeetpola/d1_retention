@@ -1,0 +1,21 @@
+# Generated reports — kept locally, not in repo
+outputs/*
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+
+# Editor / OS
+.DS_Store
+.vscode/
+.idea/
+
+# Secrets (in case any future fetcher needs them)
+.secrets/
+.env
+
+# uv
+.python-version
