@@ -86,12 +86,32 @@ In your `d1-retention-analysis.md`:
 - **Ask it to load extra files** — e.g., "if you want context on what changed,
   call `load_file('docs/release_log.md')`"
 - **Ask it to load the full sheet** — the inlined table is a slice (last 180
-  days, `acquisition_source=All` only). For per-source detail, prose-instruct:
-  "if your verdict on hypothesis #2 changes when you look at acquisition-source
-  detail, call `load_file('sheets/d1_retention.csv')`"
+  days, **`platform=android × acquisition_source=organic`**, the PM-default
+  headline cohort). For other platforms or sources, prose-instruct:
+  "if your verdict changes when you look at iOS or paid acquisition,
+  call `load_file('sheets/d1_retention.csv')` for the full breakdown"
 
 The LLM also has `list_files()` available — it can call this to see what's in
 `data/` if it needs to.
+
+### Deterministic D1 retention math (MCP tools)
+
+Beyond `list_files` / `load_file`, the LLM has five deterministic-math tools
+it can call mid-reasoning. These exist so the LLM does NOT have to compute
+rolling averages or apply thresholds itself — the PM can tune the methodology
+in the playbook prose without worrying about LLM arithmetic mistakes.
+
+| Tool | What it does |
+|---|---|
+| `compute_rolling_average(metric, platform, acquisition_source, end_date, window_days)` | Rolling average over a caller-chosen window. |
+| `compute_stable_baseline(metric, platform, acquisition_source, weekday=None, baseline_start_date)` | IQR-cleaned, day-of-week-grouped mean (the PM's "stable baseline" methodology). |
+| `compare_to_baseline(date, metric, platform, acquisition_source, baseline_kind="stable" \| "rolling7")` | Delta of one date vs the chosen baseline; returns severity (`flag` / `alert` / `rise_flag` / `rise_alert` / `normal`). |
+| `flag_dip_days(metric, platform, acquisition_source, days_back, threshold_pp_drop, threshold_pp_alert, baseline)` | List of every day in the window that crossed the threshold. |
+| `compute_signals_for_day(date, platform, acquisition_source)` | All eight diagnostic signals for one flagged day in one call (platform delta, iOS comparator, D0 opt-in / login / uninstall change, engagement change, installs ratio, weekday). |
+
+Defaults match the PM methodology (2pp = flag, 4pp = alert, baseline starts
+2026-01-01) but every parameter is exposed. PMs can ask "show me last 30 days
+with a 1pp threshold" and the LLM will pass through the override.
 
 ---
 

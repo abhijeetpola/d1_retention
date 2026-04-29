@@ -1,115 +1,144 @@
-<!-- desc: Definitions of every column in d1_retention.csv — d1 vs d1_corrected, sessions, pct_* denominators, d0_uninstall -->
+<!-- desc: Definitions of every column in d1_retention.csv — d1 (return-aligned) vs d1_corrected (install-aligned), engagement caveats, data gaps -->
 # Data dictionary — `sheets/d1_retention.csv`
 
-Reference for what each column means. Use this when interpreting numbers
-and especially when deciding between `d1` and `d1_corrected` — they
-disagree on incident days, and that disagreement is meaningful.
+Reference for what each column means. Use this to interpret numbers and to decide between `d1` and `d1_corrected` — they are aligned to **different dates** and confusing them produces wrong verdicts.
 
-This file is **eng-maintained**. PMs flag corrections; eng updates.
+## Sheet structure & key conventions
+
+- One row per **(date × platform × acquisition_source)**.
+- T-1 basis: April 19 row contains April 18 data.
+- `acquisition_source = 'All'` is a **pre-calculated aggregate**, not a sum of the others. Always use `acquisition_source = 'All'` (or filter to a specific source). Do not add organic + paid + WTA + others.
+- Rows with `#DIV/0!` = zero installs in that cohort. Treat as null.
+- `installs` is **activated installs** — counted when a user installs AND opens the app. Not raw Play Store / App Store downloads.
 
 ## Identity columns
 
 | Column | Meaning |
 |---|---|
-| `date` | UTC date the row describes. One row per (`date`, `platform`, `acquisition_source`) tuple. |
-| `platform` | `ios` or `android`. |
-| `acquisition_source` | One of `organic`, `paid`, `WTA` (whatsapp-to-app), `others`, `All`. `All` is the cross-source aggregate already present in the sheet. |
+| `date` | UTC date the row describes. |
+| `platform` | `android` or `ios`. |
+| `acquisition_source` | `organic`, `paid`, `WTA` (whatsapp-to-app), `others`, or `All` (aggregate). |
+| `week`, `month` | Week / month the date falls into. |
 
 ## Volume metrics
 
 | Column | Meaning |
 |---|---|
-| `dau` | Daily active users on `date`. An "active" user is one with at least one session on that day. |
-| `installs` | New installs first activated on `date`. |
-| `uninstalls` | Uninstalls counted on `date` (any cohort, not just new installs). Set to `0` for iOS — App Store does not expose this signal. |
-| `d0_uninstalls` | Same-day uninstalls — users who installed AND uninstalled on `date`. The strongest signal of install quality. iOS is `0`. |
-| `net_installs` | `installs - uninstalls` on `date`. |
+| `dau` | Daily active users. |
+| `installs` | New activated installs. |
+| `uninstalls` | App uninstalls — **Android only**. iOS rows have `0`. |
+| `d0_uninstalls` | Users who installed AND uninstalled on the same day. **Android only.** |
+| `net_installs` | `installs - uninstalls`. For iOS, `net_installs = installs` because uninstalls aren't available. |
 
-## Engagement metrics
+## Retention rates — return-date aligned (`d1`, `d7`, `d30`)
+
+For row dated **April 16**:
+- `d1` = D1 retention of the **April 15 cohort** (installed Apr 15, returned Apr 16).
+- `d7` = D7 of the April 9 cohort (installed Apr 9, returned Apr 16).
+- `d30` = D30 of the March 17 cohort.
+
+So a *low `d1` on `date`* really points at the *cohort that arrived `date − 1`*. When investigating an Apr 16 dip, the cohort to scrutinise is **Apr 15** (`d1_cohort_day`).
+
+## Retention rates — install-date aligned (`d1_corrected`, `d7_corrected`, `d30_corrected`)
+
+For row dated **April 16**:
+- `d1_corrected` = D1 retention of users who **installed on April 16** (will return Apr 17).
+- `d7_corrected` = D7 of the April 16 install cohort (return Apr 23).
+- `d30_corrected` = D30 of the April 16 install cohort (return May 16).
+
+**Most recent dates are blank** because the cohort hasn't completed D1/D7/D30 yet. This is **not** a measurement-artefact correction; it is just an alignment shift.
+
+**Definition of D1:** installed day X, opened the app on day X+1. Always cohort-aligned to the install day.
+
+**Use `d1_corrected` for the headline** (clean cohort attribution). Use raw `d1` for anomaly spotting — when something happened on `date` that affected returners more than installers.
+
+## Retention — absolute counts and helpers
 
 | Column | Meaning |
 |---|---|
-| `pvs` | Page views in the day. |
-| `sessions` | Sessions in the day. A session is a contiguous use of the app, ending after ~30 minutes of inactivity. |
-| `logins` | Logins on `date`. |
-| `avg_engagement_time_per_user` | Mean time-in-app per active user (in seconds). |
-| `avg_sessions_per_user` | `sessions / dau`. |
-| `avg_pvs_per_session` | `pvs / sessions`. |
+| `d1_users`, `d7_users`, `d30_users` | Absolute users returning on their D1 / D7 / D30 today. |
+| `d1_installs`, `d7_installs`, `d30_installs` | Installs mapped to `d1_cohort_day`, `d7_cohort_day`, `d30_cohort_day`. |
+| `d1_cohort_day` = `date − 1` | The install cohort whose D1 falls today. |
+| `d7_cohort_day` = `date − 7` | Cohort whose D7 falls today. |
+| `d30_cohort_day` = `date − 30` | Cohort whose D30 falls today. |
 
-## Channel-share metrics
+**Pivot rule (no exceptions):** weekly or monthly D1/D7/D30 must come from the dedicated pivot tables (`app_d1_retention_health_weekly` etc., not in the inlined slice — load the full sheet only if needed). **Never average daily rates to compute weekly/monthly retention.** Averaging daily rates ≠ true cohort rate.
 
-These split DAU by how the user *opened* the app on `date`.
+## DAU channel breakdown
 
 | Column | Meaning |
 |---|---|
-| `dau_via_notifications` | Users who opened the app from a push notification. |
-| `dau_via_launcher` | Users who opened from the home screen / app drawer icon. |
-| `dau_via_deeplink` | Users who opened from a deeplink (WhatsApp share, browser link, etc.). |
+| `dau_via_notifications` | DAU who opened via push notification click. |
+| `dau_via_launcher` | DAU who opened via the home-screen icon. |
+| `dau_via_deeplink` | DAU who opened via a deeplink (WhatsApp share, web link, etc.). |
 | `pct_dau_via_notifications` | `dau_via_notifications / dau`. |
 | `pct_dau_via_launcher` | `dau_via_launcher / dau`. |
 | `pct_dau_via_deeplink` | `dau_via_deeplink / dau`. |
 
-A push-notification outage shows up as a sudden drop in
-`pct_dau_via_notifications` (and a compensating rise in
-`pct_dau_via_launcher` if some users still come back on their own).
+**Important:** these three channels **overlap** — one user can be counted in more than one. They do **not** sum to DAU.
 
-## Retention metrics — the key triplet
+A push-notification outage shows up as a sudden drop in `pct_dau_via_notifications` (and a compensating rise in `pct_dau_via_launcher` if some users still come back on their own).
 
-`d1`, `d7`, `d30` are **lagged retention rates** anchored on the install
-cohort.
+## Engagement (all-DAU, not cohort-specific)
 
 | Column | Meaning |
 |---|---|
-| `d1` | Of the cohort that installed on `date - 1`, the share that returned on `date`. |
-| `d7` | Of the cohort that installed on `date - 7`, the share that returned on `date`. |
-| `d30` | Of the cohort that installed on `date - 30`, the share that returned on `date`. |
+| `pvs` | Total page views in the day. |
+| `sessions` | Total sessions in the day. |
+| `logins` | Total login events. |
+| `avg_engagement_time_per_user` | Mean time-in-app per active user (seconds). |
+| `avg_sessions_per_user` | `sessions / dau`. |
+| `avg_pvs_per_session` | `pvs / sessions`. |
 
-So a *low `d1` on `date`* really points at the *cohort that arrived
-yesterday*. When investigating a `d1` dip on, say, March 9, the install
-spike to look at is March 8.
+**Important caveat:** these are all-DAU, **not** new-install-cohort-specific. Use directionally when checking D0 session quality (Step 4 of the diagnostic checklist).
 
-## `d1_corrected` vs `d1` — why they disagree
-
-The "corrected" variants adjust for known measurement artefacts:
-late-attribution installs, push-receipt timing, server clock drift, and
-in-app crash-loop sessions that fail to record correctly.
+## D0 behaviour (new install cohort, on install day)
 
 | Column | Meaning |
 |---|---|
-| `d1_corrected` | `d1` after correction; closer to the "true" cohort retention. |
-| `d7_corrected` | `d7` after correction. |
-| `d30_corrected` | `d30` after correction. |
+| `d0_notification_opt_in` | Absolute new users who opted into push during onboarding. |
+| `pct_d0_notification_opt_in` | `d0_notification_opt_in / installs`. The **strongest leading indicator** for D1, D7, D30. |
+| `d0_login` | Absolute new users who logged in on day 0. |
+| `pct_d0_login` | `d0_login / installs`. |
 
-On normal days, raw and corrected differ by 1–3 percentage points.
-On **incident days** (notification outages, app crashes), raw `d1` can
-be 2× lower than `d1_corrected` because the correction backs out the
-crash-loop effect. **Trust `d1_corrected` for verdicts; use raw `d1`
-to spot anomalies.**
-
-## D0 funnel metrics
-
-These describe the install cohort itself — what happened to users on
-their first day.
+## Logged-in users
 
 | Column | Meaning |
 |---|---|
-| `pct_d0_notification_opt_in` | Of users installed on `date`, the share that opted into push notifications during onboarding. |
-| `pct_d0_login` | Of users installed on `date`, the share that logged in on day 0. |
-| `pct_dau_logged_in` | Of all DAU on `date`, the share that is logged in (any cohort). |
+| `dau_logged_in` | Absolute DAU who are logged in. |
+| `pct_dau_logged_in` | `dau_logged_in / dau`. |
 
-A drop in `pct_d0_notification_opt_in` predicts lower D7/D30 a week or
-month out — opt-in is the single strongest leading indicator.
+## Data gaps (priority-ranked)
 
-## A few non-obvious things to remember
+These signals matter for the diagnostic but are **not** in the sheet. The LLM should name them as gaps when relevant, not pretend to evaluate them.
 
-- **`uninstalls` is gross, not by-cohort.** A high `uninstalls` on a
-  given day does not mean the *new* cohort uninstalled — they might be
-  long-tenured users churning. Use `d0_uninstalls` for cohort-quality
-  signal.
-- **`dau` is unique users, not sessions.** A user with three sessions
-  on the same day counts once.
-- **`platform=ios` rows have `uninstalls=0` and `d0_uninstalls=0`.**
-  This is a measurement gap, not real behaviour. Don't attempt to
-  test install-quality hypotheses on iOS.
-- **`acquisition_source=All` is an aggregate.** Per-source breakdowns
-  (`paid` vs `organic`) need the full sheet, not the inlined slice.
+### Priority 1 — critical (block diagnosis)
+
+| Gap | Stage |
+|---|---|
+| D0 avg engagement time — new installs only (current is all-DAU). | 2 |
+| D0 page views — new installs only. | 2 |
+| D0 sessions — new installs only. | 2 |
+| D1 notification send rate (of opted-in users, what % actually received a push?). | 3 |
+| D1 notification CTR / open rate (of those who received it, what % returned via the push?). | 3 |
+
+### Priority 2 — important
+
+| Gap | Stage |
+|---|---|
+| WTA source content category (what article converted the web user?). | 1 |
+| D0 content category consumed by new installs. | 2 |
+| D0 feature usage (search, save, follow topic). | 2 |
+
+### Priority 3 — valuable
+
+| Gap | Stage |
+|---|---|
+| D0 crash rate — new installs. Silent D1 killer. | 2 |
+| D0 personalisation completion. | 2 |
+| D1 notification content type. | 3 |
+| D1 notification send time. | 3 |
+
+## Headline rule
+
+**"D1 retention" = Android organic D1** unless the PM's query asks otherwise. Use `d1_corrected` for the headline (install-cohort-aligned). Use raw `d1` for anomaly spotting where the day-of-return matters more than the day-of-install.

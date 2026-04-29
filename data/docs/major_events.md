@@ -9,6 +9,18 @@ next day often falls because the new-user denominator swells.
 This file is **PM-maintained**. The rows below are illustrative samples.
 PMs replace them with real events they remember.
 
+## Significance taxonomy
+
+Use this when adding rows or interpreting them. **Only events labelled `high` warrant a news mention in the report.** `medium` is steady context, not a spike driver. `low` does not move the needle nationally and should not appear in the report.
+
+| Tier | What qualifies | Examples |
+|---|---|---|
+| **high** | Armed conflict involving India; global conflict with direct Indian stakes; domestic mass-impact event; economic shock | Operation Sindoor; US-Iran war; Sensex 2000+ point crash; landmark Supreme Court verdict; major terror attack; national budget |
+| **medium** | Ongoing election coverage; cricket (India playing); long-running geopolitical without direct India hit; steady-engagement stories | Election campaign cycle; ICC tournaments (non-final); ongoing Russia-Ukraine without India stake spike |
+| **low** | Regional accidents; state politics without a national narrative; entertainment; non-cricket sports; incremental policy | Single-state event; CM change; celebrity news; F1, football |
+
+Test for `high`: would this story make someone in Mumbai, Delhi, Bengaluru, AND Patna all open their news app? Yes across all four → `high`. Yes for one city → `low`.
+
 ## How to read this
 
 | Column | Meaning |
@@ -16,6 +28,7 @@ PMs replace them with real events they remember.
 | `Date` | Day of the event (or the day the news cycle peaked) |
 | `Event` | Short label |
 | `Type` | news / sports / politics / economy / disaster / celebrity |
+| `Significance` | high / medium / low (per the taxonomy above) |
 | `Expected effect` | What the PM expected to see in retention |
 | `Notes` | Anything observed after the fact, or special context |
 
