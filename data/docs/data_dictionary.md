@@ -62,7 +62,7 @@ For row dated **April 16**:
 | `d7_cohort_day` = `date − 7` | Cohort whose D7 falls today. |
 | `d30_cohort_day` = `date − 30` | Cohort whose D30 falls today. |
 
-**Pivot rule (no exceptions):** weekly or monthly D1/D7/D30 must come from the dedicated pivot tables (`app_d1_retention_health_weekly` etc., not in the inlined slice — load the full sheet only if needed). **Never average daily rates to compute weekly/monthly retention.** Averaging daily rates ≠ true cohort rate.
+**Pivot rule (no exceptions):** weekly or monthly D1/D7/D30 must come from the dedicated pivot tables (`app_d1_retention_health_weekly` etc.) — reachable via `load_file('sheets/d1_retention.csv')` for the full historical breakdown. **Never average daily rates to compute weekly/monthly retention.** Averaging daily rates ≠ true cohort rate.
 
 ## DAU channel breakdown
 

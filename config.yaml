@@ -17,7 +17,10 @@ system_preamble: |
   Your job:
   - Read the PM's playbook below. It contains the hypothesis, the diagnostic
     framework, and the report shape.
-  - Examine the data table inlined into the prompt (Android organic slice by default).
+  - Fetch every retention number through an MCP tool. There is no inlined
+    data table in this prompt — `get_rows` (for raw slices) and the
+    deterministic-math tools (rolling average, stable baseline, compare,
+    flag dips, signals, mix shift) cover every read against the sheet.
   - For every threshold check, rolling average, stable baseline, dip-flagging, or
     per-day diagnostic — call an MCP tool. Do not derive averages or apply
     thresholds yourself.
@@ -46,8 +49,8 @@ system_preamble: |
     every column means. Switch to definition mode only if the PM's query
     explicitly asks for it.
   - Cite specific dates and numeric values when stating findings.
-  - Do not invent data. Every claim must trace to a row in the inlined table,
-    a loaded file, or a value returned by an MCP tool.
+  - Do not invent data. Every claim must trace to a value returned by an MCP
+    tool, a row from `get_rows`, or a context document loaded via `load_file`.
   - This is advisory output. Never claim a live business setting was changed.
   - Stop iterating once you have enough evidence — do not loop pointlessly.
 
@@ -58,46 +61,6 @@ system_preamble: |
   - If you load the full sheet, do it AT MOST ONCE per run.
   - Do NOT include long quoted CSV slices or row-by-row enumerations in your
     report — PMs read it as a summary, not as raw data.
-
-# How much of the sheet to inline up front.
-# The full file is always accessible via load_file('sheets/d1_retention.csv').
-inline_data:
-  # Which platform to include. PM convention: D1 retention = Android organic.
-  platform: android
-  # Which acquisition_source(s) to include in the inlined table.
-  acquisition_source: organic
-  # Most recent N days to inline at daily granularity.
-  days: 180
-  # Which columns to keep. Drop the sparse cohort columns by default.
-  columns:
-    - date
-    - platform
-    - dau
-    - dau_via_notifications
-    - dau_via_launcher
-    - dau_via_deeplink
-    - installs
-    - uninstalls
-    - d0_uninstalls
-    - d1
-    - d7
-    - d30
-    - d1_corrected
-    - d7_corrected
-    - d30_corrected
-    - pvs
-    - sessions
-    - logins
-    - avg_engagement_time_per_user
-    - avg_sessions_per_user
-    - avg_pvs_per_session
-    - pct_d0_notification_opt_in
-    - pct_d0_login
-    - pct_dau_logged_in
-    - pct_dau_via_notifications
-    - pct_dau_via_launcher
-    - pct_dau_via_deeplink
-    - net_installs
 
 # Where the report goes.
 # {date} = run date in YYYY-MM-DD; {time} = HHMMSS; {basename} = playbook stem.

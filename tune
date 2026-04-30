@@ -3,13 +3,11 @@
 
 Workflow:
   1. Read d1-retention-analysis.md (PM-edited prose)
-  2. Read data/sheets/d1_retention.csv, filter + slice per config.yaml,
-     render as a Markdown table
-  3. Build the user message: prose + inlined table + footer telling the LLM
-     about list_files / load_file
+  2. Compute full-sheet stats (rows × cols + date range) for the pre-flight banner
+  3. Build the user message: prose + footer naming the MCP tools the LLM can use
   4. Write a per-run MCP config pointing at tune_mcp.py
   5. Launch:  claude -p --output-format json --mcp-config <cfg>
-              --allowed-tools mcp__sandbox__list_files mcp__sandbox__load_file
+              --allowed-tools mcp__sandbox__<each tool>
               --system-prompt <preamble>  <  combined_user_message
   6. Write the response to outputs/<date>-d1_retention.md (+ outputs/latest.md symlink)
   7. open outputs/latest.md
@@ -17,6 +15,7 @@ Workflow:
 Usage:
   ./tune                  Run the analysis end-to-end.
   ./tune doctor           Verify environment (claude installed, logged in).
+  ./tune --verify         Validate playbook tool calls against the MCP registry.
   ./tune --dry-run        Build the prompt and print it; do NOT call claude.
 """
 
@@ -131,6 +130,16 @@ def run(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Build the prompt and print it; do NOT call claude."
     ),
+    verify: bool = typer.Option(
+        False,
+        "--verify",
+        help=(
+            "Validate the playbook's tool calls against the live MCP registry. "
+            "Imports every tool file (catches Python errors) and checks each "
+            "tool reference in the playbook for unknown names or invalid "
+            "parameters. No LLM call. Returns 0 if clean, non-zero on errors."
+        ),
+    ),
     no_open: bool = typer.Option(
         False,
         "--no-open",
@@ -154,16 +163,17 @@ def run(
     """Run the analysis end-to-end. An optional one-shot question may follow."""
     config = _load_config()
     resolved_model, model_display, provider = _resolve_model(model, config)
+    if verify:
+        _run_verify_checks()
+        return
     _ensure_environment(
         cli_required=None if dry_run else provider,
     )
 
     pm_query = " ".join(query).strip() if query else ""
     prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
-    inlined_text, slice_summary = _render_inlined_sheet(config["inline_data"])
-    user_message = _build_user_message(
-        prose=prose, inlined_sheet=inlined_text, pm_query=pm_query
-    )
+    sheet_stats = _compute_sheet_stats()
+    user_message = _build_user_message(prose=prose, pm_query=pm_query)
 
     if dry_run:
         console.print("[bold]── prompt preview (dry run) ──[/bold]\n")
@@ -177,7 +187,7 @@ def run(
 
     _print_preflight(
         prose=prose,
-        slice_summary=slice_summary,
+        sheet_stats=sheet_stats,
         docs=_list_docs(),
         model_display=model_display,
         pm_query=pm_query,
@@ -291,7 +301,7 @@ def _run_doctor_checks() -> None:
         _die(f"config.yaml malformed: {e}")
     if not isinstance(cfg, dict):
         _die("config.yaml does not contain a top-level mapping")
-    required = {"model", "system_preamble", "inline_data", "output_template"}
+    required = {"model", "system_preamble", "output_template"}
     missing = required - set(cfg.keys())
     if missing:
         _die(f"config.yaml missing keys: {sorted(missing)}")
@@ -364,6 +374,155 @@ def _run_doctor_checks() -> None:
     )
 
 
+def _run_verify_checks() -> None:
+    """Validate the playbook's tool calls against the live MCP registry.
+
+    Two layers of checking:
+      1. Imports `tune_mcp.py`, which transitively imports every tool file in
+         `tools/`. Catches Python errors (syntax errors, missing imports, etc.)
+         in any tool file before the PM pays for an LLM run.
+      2. Parses the playbook prose for tool-call patterns and validates each
+         against the live tool registry: tool name exists, named parameters
+         match the tool's input schema.
+
+    Exits 0 on success, non-zero with a clear error otherwise.
+    """
+    import asyncio
+    import difflib
+    import re as _re
+
+    console.print("[bold]Verify[/bold]")
+
+    # --- Layer 1: import the MCP server (transitively imports every tool) ---
+    try:
+        from importlib.machinery import SourceFileLoader
+
+        mcp_module = SourceFileLoader(
+            "_verify_mcp_srv", str(MCP_SERVER_PATH)
+        ).load_module()
+    except Exception as e:
+        _die(
+            f"failed to import the MCP server:\n  "
+            f"{type(e).__name__}: {e}\n  "
+            f"This usually means a tool file under tools/ has a Python error."
+        )
+    console.print(f"  [green]✓[/green] {MCP_SERVER_PATH.name} imports cleanly")
+
+    async def _list_tools_async():
+        return await mcp_module.server.list_tools()
+
+    tools = asyncio.run(_list_tools_async())
+    tool_index: dict[str, dict[str, Any]] = {}
+    for t in tools:
+        tool_index[t.name] = {
+            "description": t.description or "",
+            "schema": t.inputSchema or {},
+        }
+    console.print(f"  [green]✓[/green] {len(tools)} tool(s) registered")
+
+    # --- Layer 2: parse the playbook for tool calls ---
+    if not PLAYBOOK_PATH.exists():
+        _die(f"playbook not found: {PLAYBOOK_PATH}")
+
+    prose = PLAYBOOK_PATH.read_text(encoding="utf-8")
+    lines = prose.splitlines()
+    errors: list[str] = []
+    call_count = 0
+
+    # Recognise calls like `tool_name(arg1=value1, arg2=value2)`. Tool names
+    # must be referenced by name; freeform mentions in prose are only
+    # validated when followed by an opening paren (i.e. call sites).
+    call_pattern = _re.compile(r"\b([a-z_][a-z0-9_]*)\s*\(", _re.IGNORECASE)
+
+    # Build a flat index from line offsets to line numbers for nicer errors.
+    line_starts: list[int] = [0]
+    for line in lines:
+        line_starts.append(line_starts[-1] + len(line) + 1)
+
+    def _line_for_offset(off: int) -> int:
+        # Binary search would be faster but linear is fine for our prose size.
+        for i, start in enumerate(line_starts):
+            if start > off:
+                return i  # 1-based line number
+        return len(lines)
+
+    for m in call_pattern.finditer(prose):
+        name = m.group(1)
+        # Heuristic: only treat as a tool call if name looks like a tool we know
+        # OR it starts with one of our common verbs. Otherwise it's likely a
+        # natural-language mention or a function in code prose unrelated to
+        # tools — skip silently.
+        if name not in tool_index:
+            # Suggest if it's close to a known name.
+            close = difflib.get_close_matches(name, tool_index.keys(), n=1, cutoff=0.7)
+            if close:
+                line_no = _line_for_offset(m.start())
+                errors.append(
+                    f"playbook line {line_no}: unknown tool {name!r}. "
+                    f"Did you mean {close[0]!r}?"
+                )
+            # else: not a tool call, ignore.
+            continue
+
+        # We've matched a known tool. Now extract the arguments inside (...).
+        call_count += 1
+        paren_start = m.end() - 1  # position of the '('
+        depth = 0
+        end = None
+        for i in range(paren_start, len(prose)):
+            ch = prose[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+                if depth == 0:
+                    end = i
+                    break
+        if end is None:
+            line_no = _line_for_offset(m.start())
+            errors.append(
+                f"playbook line {line_no}: unclosed `(` after tool {name!r}"
+            )
+            continue
+        args_text = prose[paren_start + 1 : end]
+
+        # Pull out the arg keywords. We look for `keyword=...` patterns at the
+        # top level (not inside nested parens or quotes).
+        kw_pattern = _re.compile(r"([a-zA-Z_][a-zA-Z0-9_]*)\s*=", _re.MULTILINE)
+        used_kwargs: set[str] = set()
+        for km in kw_pattern.finditer(args_text):
+            used_kwargs.add(km.group(1))
+
+        schema = tool_index[name]["schema"]
+        valid_params = set((schema.get("properties") or {}).keys())
+        unknown = used_kwargs - valid_params
+        if unknown:
+            line_no = _line_for_offset(m.start())
+            for u in sorted(unknown):
+                close = difflib.get_close_matches(u, valid_params, n=1, cutoff=0.7)
+                hint = f" Did you mean {close[0]!r}?" if close else ""
+                errors.append(
+                    f"playbook line {line_no}: tool {name!r} has no parameter "
+                    f"{u!r}.{hint}"
+                )
+
+        # Note: we deliberately do NOT enforce that all required parameters
+        # are present, because the LLM is the one calling the tool at runtime.
+        # The playbook prose is illustrative; the LLM may fill defaults from
+        # the description.
+
+    console.print(f"  [green]✓[/green] {call_count} tool call(s) parsed in playbook")
+
+    if errors:
+        err_console.print()
+        for e in errors:
+            err_console.print(f"  [red]✗[/red] {e}")
+        err_console.print()
+        _die(f"playbook verify failed: {len(errors)} issue(s) found")
+
+    console.print("[bold green]✓ verify: all tool calls valid[/bold green]")
+
+
 # ---------------------------------------------------------------------------
 # implementation
 # ---------------------------------------------------------------------------
@@ -418,78 +577,22 @@ def _ensure_environment(
             console.print(f"[green]✓[/green] {binary} CLI present on PATH")
 
 
-def _render_inlined_sheet(inline_cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
-    """Read the sheet, filter to acquisition_source, take last N days, project columns.
+def _compute_sheet_stats() -> dict[str, Any]:
+    """Read the retention sheet and return shape + date-range stats for the banner.
 
-    Returns (markdown_text, summary_dict). summary_dict has rows/cols/days/source and
-    full-sheet stats (total_rows, total_cols, min_date, max_date) for the pre-flight line.
+    The banner shows full-sheet rows × cols and the date range covered. The LLM
+    fetches every retention number through MCP tools at run time; nothing from
+    the sheet is inlined into the prompt.
     """
     df = pd.read_csv(SHEET_PATH, thousands=",", low_memory=False)
-
-    # Capture full-sheet stats before any filtering.
-    full_total_rows = len(df)
-    full_total_cols = len(df.columns)
-
-    # Coerce date and sort ascending.
     df["date"] = pd.to_datetime(df["date"], errors="coerce")
-    df = df.dropna(subset=["date"]).sort_values("date")
-
-    full_min_date = df["date"].min().strftime("%Y-%m-%d") if len(df) else "?"
-    full_max_date = df["date"].max().strftime("%Y-%m-%d") if len(df) else "?"
-
-    # Filter by platform (optional — empty/missing means no filter).
-    platform_filter = inline_cfg.get("platform")
-    if platform_filter:
-        if isinstance(platform_filter, str):
-            platform_list = [platform_filter]
-        else:
-            platform_list = list(platform_filter)
-        df = df[df["platform"].isin(platform_list)]
-    else:
-        platform_list = []
-
-    # Filter by acquisition_source.
-    src_filter = inline_cfg["acquisition_source"]
-    if isinstance(src_filter, str):
-        src_filter = [src_filter]
-    df = df[df["acquisition_source"].isin(src_filter)]
-
-    # Latest N days.
-    days = int(inline_cfg.get("days", 180))
-    if days > 0:
-        cutoff = df["date"].max() - pd.Timedelta(days=days - 1)
-        df = df[df["date"] >= cutoff]
-
-    # Project columns.
-    cols = inline_cfg["columns"]
-    available = [c for c in cols if c in df.columns]
-    df = df[available].copy()
-
-    # Make date column readable.
-    if "date" in df.columns:
-        df["date"] = df["date"].dt.strftime("%Y-%m-%d")
-
-    platform_label = ",".join(platform_list) if platform_list else "all"
-    summary_text = (
-        f"_Inlined slice: {len(df):,} rows × {len(df.columns)} cols. "
-        f"platform={platform_label}. "
-        f"acquisition_source={src_filter}. "
-        f"Last {days} days only._\n\n"
-        f"_For per-platform / per-acquisition-source detail or older history, call "
-        f"`load_file('sheets/d1_retention.csv')`._\n\n"
-    )
-    summary_dict = {
-        "rows": len(df),
-        "cols": len(df.columns),
-        "days": days,
-        "platform": platform_label,
-        "source": ",".join(src_filter),
-        "full_total_rows": full_total_rows,
-        "full_total_cols": full_total_cols,
-        "full_min_date": full_min_date,
-        "full_max_date": full_max_date,
+    df = df.dropna(subset=["date"])
+    return {
+        "full_total_rows": len(df),
+        "full_total_cols": len(df.columns),
+        "full_min_date": df["date"].min().strftime("%Y-%m-%d") if len(df) else "?",
+        "full_max_date": df["date"].max().strftime("%Y-%m-%d") if len(df) else "?",
     }
-    return summary_text + df.to_markdown(index=False), summary_dict
 
 
 def _list_docs() -> list[str]:
@@ -507,7 +610,7 @@ def _list_docs() -> list[str]:
 def _print_preflight(
     *,
     prose: str,
-    slice_summary: dict[str, Any],
+    sheet_stats: dict[str, Any],
     docs: list[str],
     model_display: str,
     pm_query: str,
@@ -522,16 +625,10 @@ def _print_preflight(
         f"[dim]({word_count:,} words)[/dim]"
     )
     console.print(
-        f"[bold]Data slice:[/bold] last {slice_summary['days']} days × "
-        f"{slice_summary['cols']} cols × platform={slice_summary.get('platform', 'all')} × "
-        f"acquisition_source={slice_summary['source']} "
-        f"[dim]({slice_summary['rows']:,} rows)[/dim]"
-    )
-    console.print(
-        f"[bold]Full sheet:[/bold] [dim]{slice_summary['full_total_rows']:,} rows × "
-        f"{slice_summary['full_total_cols']} cols "
-        f"({slice_summary['full_min_date']} → {slice_summary['full_max_date']}); "
-        f"available on demand via load_file[/dim]"
+        f"[bold]Data:[/bold]       full sheet via MCP tools "
+        f"[dim]({sheet_stats['full_total_rows']:,} rows × "
+        f"{sheet_stats['full_total_cols']} cols, "
+        f"{sheet_stats['full_min_date']} → {sheet_stats['full_max_date']})[/dim]"
     )
     console.print(f"[bold]Extra docs:[/bold] [dim]{docs_line}[/dim]")
     console.print(f"[bold]Model:[/bold]      [dim]{model_display}[/dim]")
@@ -543,7 +640,7 @@ def _print_preflight(
     console.print()
 
 
-def _build_user_message(*, prose: str, inlined_sheet: str, pm_query: str = "") -> str:
+def _build_user_message(*, prose: str, pm_query: str = "") -> str:
     parts = [
         "# PM playbook (the prose to follow)",
         "",
@@ -551,18 +648,21 @@ def _build_user_message(*, prose: str, inlined_sheet: str, pm_query: str = "") -
         "",
         "---",
         "",
-        "# Pre-loaded data",
-        "",
-        inlined_sheet,
-        "",
-        "---",
-        "",
         "# Tools you have available",
+        "",
+        "All retention data is reached through MCP tools — there is no inlined "
+        "data table in this prompt. The deterministic-math tools "
+        "(`compute_rolling_average`, `compute_stable_baseline`, "
+        "`compare_to_baseline`, `flag_dip_days`, `compute_signals_for_day`, "
+        "`compute_acquisition_mix_shift`) cover every threshold and baseline "
+        "calculation. Use `get_rows(platform, acquisition_source, date_from, "
+        "date_to, days, columns)` when the question is \"show me the data\" "
+        "rather than \"compute one number.\"",
         "",
         "- `list_files()` — see all files under data/",
         "- `load_file('docs/<file.md>')` — load a context document",
         "- `load_file('sheets/d1_retention.csv')` — load the FULL sheet "
-        "(all acquisition sources, all dates) if you want more granular analysis",
+        "(last resort; prefer `get_rows` for targeted slices)",
     ]
     if pm_query:
         parts.extend(

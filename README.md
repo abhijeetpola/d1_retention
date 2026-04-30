@@ -70,6 +70,27 @@ If `./tune doctor` says everything is fine, you're ready.
    what new hypothesis to test. Edit the prose again. Repeat.
 ```
 
+### A worked first edit
+
+What "tune the prose" looks like in practice. Open `d1-retention-analysis.md`,
+find Stage 2 (D0 Experience). The default prose treats opt-in, login,
+engagement, and uninstall as four equal signals. Suppose you want the LLM
+to lead with opt-in when it moves at all. You change one bullet:
+
+```
+Before:  **3. D0 notification opt-in rate.**
+         Most powerful leading indicator. No opt-in = no push reach on D1.
+
+After:   **3. D0 notification opt-in rate.** *(the lead Stage-2 signal)*
+         If `signals.pct_d0_notification_opt_in_delta_pp` moves more than
+         1pp on the cohort day, this is your headline driver — say so in
+         the Diagnosis. Other Stage-2 signals are supporting evidence.
+```
+
+Save. Run `./tune "Why did D1 dip on April 27?"`. Compare the new report's
+Diagnosis line to the old one — you should see opt-in named first instead
+of buried as one of four bullets. That single edit + run is the loop.
+
 Each run typically takes 2–5 minutes. Cost is around $0.30–$1.50 (charged
 to your Claude subscription, not to a separate API budget). If a run takes
 much longer or costs much more, the LLM is probably re-loading the full sheet
@@ -84,34 +105,33 @@ In your `d1-retention-analysis.md`:
 - **Refer to columns by name** — e.g., "compare `d1` against `d1_corrected`",
   "look at `pct_dau_via_notifications` on dip days"
 - **Ask it to load extra files** — e.g., "if you want context on what changed,
-  call `load_file('docs/release_log.md')`"
-- **Ask it to load the full sheet** — the inlined table is a slice (last 180
-  days, **`platform=android × acquisition_source=organic`**, the PM-default
-  headline cohort). For other platforms or sources, prose-instruct:
-  "if your verdict changes when you look at iOS or paid acquisition,
-  call `load_file('sheets/d1_retention.csv')` for the full breakdown"
+  call `load_file('docs/known_incidents.md')`"
+- **Ask it to query a different segment** — every retention number is fetched
+  through `get_rows(platform, acquisition_source, date_from, date_to)` or a
+  `compute_*` tool at run time. There is no inlined data table. To diagnose
+  a non-Android-organic segment, prose-instruct: "if the PM is asking about
+  iOS or paid acquisition, call `get_rows(platform='ios', ...)` and run the
+  same diagnostic checklist." For full historical breakdowns the LLM can
+  fall back to `load_file('sheets/d1_retention.csv')`.
 
 The LLM also has `list_files()` available — it can call this to see what's in
 `data/` if it needs to.
 
-### Deterministic D1 retention math (MCP tools)
+### How to write a tool call in your prose
 
-Beyond `list_files` / `load_file`, the LLM has five deterministic-math tools
-it can call mid-reasoning. These exist so the LLM does NOT have to compute
-rolling averages or apply thresholds itself — the PM can tune the methodology
-in the playbook prose without worrying about LLM arithmetic mistakes.
+The LLM picks up a tool reference when you write it as a function-call signature wrapped in backticks. Three rules:
 
-| Tool | What it does |
-|---|---|
-| `compute_rolling_average(metric, platform, acquisition_source, end_date, window_days)` | Rolling average over a caller-chosen window. |
-| `compute_stable_baseline(metric, platform, acquisition_source, weekday=None, baseline_start_date)` | IQR-cleaned, day-of-week-grouped mean (the PM's "stable baseline" methodology). |
-| `compare_to_baseline(date, metric, platform, acquisition_source, baseline_kind="stable" \| "rolling7")` | Delta of one date vs the chosen baseline; returns severity (`flag` / `alert` / `rise_flag` / `rise_alert` / `normal`). |
-| `flag_dip_days(metric, platform, acquisition_source, days_back, threshold_pp_drop, threshold_pp_alert, baseline)` | List of every day in the window that crossed the threshold. |
-| `compute_signals_for_day(date, platform, acquisition_source)` | All eight diagnostic signals for one flagged day in one call (platform delta, iOS comparator, D0 opt-in / login / uninstall change, engagement change, installs ratio, weekday). |
+1. **Wrap the call in backticks** so the LLM sees it as a tool, not commentary. `compute_signals_for_day(date="2026-04-02", platform="android", acquisition_source="organic")` reads as "call this." Plain-text descriptions like "we could compute the signals for that day" do not — the LLM treats them as suggestions, not instructions.
 
-Defaults match the PM methodology (2pp = flag, 4pp = alert, baseline starts
-2026-01-01) but every parameter is exposed. PMs can ask "show me last 30 days
-with a 1pp threshold" and the LLM will pass through the override.
+2. **Use imperative voice.** "Call `compute_X(...)` to get Y" or "**Call** `compute_X(...)` first" lands as an instruction. Conditional or hedging language ("you might call X if you want") lands as optional. If a step in the diagnostic should always run, write it as a command.
+
+3. **Use named placeholders for values that depend on the run.** Where the value comes from the PM's query at run time, write a placeholder instead of a literal: `compute_signals_for_day(date=d1_cohort_day, platform="android", acquisition_source="organic")`. The LLM resolves `d1_cohort_day` against the date convention defined near the top of the playbook. The same goes for `<segment.platform>` and `<segment.source>` if you want the call to follow whatever segment the PM is asking about.
+
+Place the call where in the flow you want it to fire. A line in Stage 1 fires before Stage 2 numbers. A line in "Report shape" fires only when the LLM is building the card. The LLM follows the structure of your prose.
+
+### Where to find the full tool list
+
+`primitives.md` is the source of truth — auto-generated from the registered MCP tools, one card per tool with parameters, defaults, return shape, and a copy-pasteable worked example. There are nine tools today: two for files (`list_files`, `load_file`), one for raw data fetches (`get_rows`), and six for deterministic math (`compute_rolling_average`, `compute_stable_baseline`, `compare_to_baseline`, `flag_dip_days`, `compute_signals_for_day`, `compute_acquisition_mix_shift`). Defaults match the PM methodology (2pp = flag, 4pp = alert, baseline starts 2026-01-01) but every parameter is exposed — you can override any of them from the playbook prose.
 
 ---
 
@@ -131,6 +151,133 @@ call `load_file('docs/causal_doc.md')` before forming verdicts.
 ```
 
 The LLM will load it mid-reasoning when the playbook asks.
+
+---
+
+## Authoring playbook calculations (the PM loop)
+
+There are two flavours of authoring. The first — wiring up existing tools in your playbook — is what you'll do every day. The second — adding a new tool when none exists — is rarer but well within reach if you can read Python at a surface level.
+
+### Using an existing tool in your playbook
+
+Every calculation the LLM makes flows through one of the tools listed in `primitives.md`. Each card has a copy-pasteable worked example. The loop:
+
+1. Open `primitives.md` and find a card whose worked example matches what
+   you want to compute. Copy the example.
+2. Paste the example into `d1-retention-analysis.md` at the step where it
+   should fire, and edit the parameter values for your case. Use the prose
+   convention from the section above (backticks, imperative voice, named
+   placeholders).
+3. Run `./tune --verify` to confirm every tool call in the playbook resolves.
+   The verifier exits in under a second and costs nothing — no LLM is
+   invoked. If you have a typo it tells you the line number and suggests
+   the closest valid name.
+4. Run `./tune --dry-run "..."` to inspect the prompt that would go to the
+   LLM. Still no LLM call.
+5. Run `./tune "..."` for the real analysis.
+
+### Adding a new tool when no existing one fits
+
+Sometimes you need a calculation no existing tool covers. You have two paths.
+
+**If you can read Python at a surface level, author the tool yourself.** The template at `tools/_TEMPLATE.py` is heavily annotated; you copy it, edit a handful of marked lines, save. The aggregator picks the new file up automatically — there is no separate registration step. You do not write any pandas; the helpers in `tools/_common.py` (`get_rows`, `aggregate`, `cohort_rate`, `delta_pp`, `filter_window`) cover the math.
+
+**If you'd rather hand it off to an engineer**, fill out `request.md` at the project root with the suggested name, a plain-English description, the inputs, and the expected output. Hand the file over. The engineer adds the tool, the catalog regenerates, and you reference it from the playbook like any other.
+
+#### Worked end-to-end example
+
+Suppose you want a Stage-0 sanity check: the ratio of new installs to DAU on a date. High ratio means the install pipeline is replenishing the base; low ratio means churn is winning. There's no existing tool for it. Here is the full path from "I want this" to "the LLM is calling it."
+
+**Step 1 — copy the template:**
+
+```bash
+cp tools/_TEMPLATE.py tools/compute_install_to_dau_ratio.py
+```
+
+**Step 2 — open the new file and edit the marked lines.** Trimmed of template comments, the file ends up looking like:
+
+```python
+from __future__ import annotations
+from typing import Any
+from tools._common import (aggregate, get_rows, server, validate_segment)
+
+@server.tool(
+    description=(
+        "Compute the ratio of installs to DAU for one date and segment. "
+        "High ratio = installs are growing the base; low ratio = the active "
+        "base is shrinking. Useful as a Stage-0 sanity check before D1 "
+        "diagnosis. "
+        "Parameters: "
+        "  date — YYYY-MM-DD. "
+        "  platform — 'android' or 'ios'. "
+        "  acquisition_source — 'organic' / 'paid' / 'WTA' / 'others' / 'All'. "
+        "Returns {ok, date, platform, acquisition_source, installs, dau, ratio}."
+    )
+)
+def compute_install_to_dau_ratio(
+    date: str,
+    platform: str,
+    acquisition_source: str,
+) -> dict[str, Any]:
+    err = validate_segment(platform, acquisition_source)
+    if err:
+        return {"ok": False, "error": err}
+    rows = get_rows(
+        platform=platform,
+        acquisition_source=acquisition_source,
+        date_from=date,
+        date_to=date,
+    )
+    installs = aggregate(rows, "installs", "sum")
+    dau = aggregate(rows, "dau", "sum")
+    if not installs or not dau:
+        return {"ok": False, "error": f"missing values on {date}"}
+    return {
+        "ok": True,
+        "date": date,
+        "platform": platform,
+        "acquisition_source": acquisition_source,
+        "installs": int(installs),
+        "dau": int(dau),
+        "ratio": round(installs / dau, 4),
+    }
+```
+
+Save.
+
+**Step 3 — confirm it registered:**
+
+```bash
+./tune --verify
+```
+
+You should see "10 tool(s) registered" (was 9). If anything is wrong — bad import, syntax error — the verifier prints the file and the line. Sub-second; no LLM call.
+
+**Step 4 — regenerate the catalog:**
+
+```bash
+uv run python generate_catalog.py
+```
+
+`primitives.md` now has a new card for `compute_install_to_dau_ratio` with the parameter table and a worked example, generated automatically from the description string.
+
+**Step 5 — reference it from the playbook.** Open `d1-retention-analysis.md` and add a paragraph at the spot in the diagnostic where the call should fire — for this example, right before Stage 1:
+
+```markdown
+**Stage 0 — Acquisition velocity check.**
+Before walking the diagnostic, get a read on whether the segment is growing
+or shrinking on the cohort day:
+
+Call `compute_install_to_dau_ratio(date=d1_cohort_day, platform="android",
+acquisition_source="organic")`.
+
+If `ratio < 0.05`, the cohort is small relative to the active base — D1 is
+noisy. Note this in the report and lower confidence on borderline verdicts.
+```
+
+**Step 6 — run.** `./tune --verify` confirms the new playbook line resolves. `./tune "Why did D1 dip on April 27?"` runs the analysis. The LLM calls your new tool at the spot you specified, and the result flows into the diagnosis.
+
+That is the full loop. Most new tools are 30–50 lines after the template comments are trimmed, and the verify-then-catalog cycle catches mistakes before any paid LLM run.
 
 ---
 
@@ -193,9 +340,9 @@ The playbook prose is for stable, structural framing. The inline question is for
 
 ## When something doesn't look right
 
-- **The report says "I cannot determine ..."** → the prose probably gave Claude too little to work with, OR the data slice doesn't have what you asked about. Try `./tune --dry-run` to see what data is being sent.
+- **The report says "I cannot determine ..."** → the prose probably gave Claude too little to work with, OR the LLM did not pull the right segment. Try `./tune --dry-run` to see exactly what prompt is being sent, then sharpen the prose.
 - **Claude says "file not found"** → call `list_files()` from inside the playbook prose: tell the LLM to start with `list_files()` to see what's there.
-- **Cost is higher than expected** → you're probably making Claude load the full CSV when it doesn't need it. Tune the prose so it only calls `load_file('sheets/d1_retention.csv')` when the inlined slice is truly insufficient.
+- **Cost is higher than expected** → you're probably making Claude load the full CSV when it doesn't need it. Tune the prose so it only calls `load_file('sheets/d1_retention.csv')` when the existing `get_rows` calls are truly insufficient.
 - **`./tune` errors out with "claude not found"** → run `claude --version` to confirm the CLI is installed and logged in.
 
 If something is genuinely broken, talk to the engineer. The plumbing
