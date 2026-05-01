@@ -123,3 +123,52 @@ def compute_template_metric(
 #
 # - Run `./tune --verify` whenever you change your tool. It catches typos
 #   without spending money on an LLM run.
+#
+# ---------------------------------------------------------------------------
+# CONVENTIONS for surfacing weak data in your return shape
+# ---------------------------------------------------------------------------
+#
+# These conventions emerged from real failure modes. Follow them when your
+# tool's shape matches the pattern. The LLM is instructed (in the playbook
+# and CLAUDE.md) to read these specific fields, so naming matters.
+#
+# 1. PARTIAL-WINDOW FLAG (for windowed computations)
+#
+#    If your tool computes over a window of N days but only n < N days have
+#    data, return the result anyway but add:
+#        "partial_window": True,
+#        "coverage_pct": round(n / N * 100.0, 1),
+#    This lets the LLM weaken its severity verdict instead of citing a
+#    confident number on a noisy baseline. See compute_rolling_average.py
+#    for the live example. compare_to_baseline.py propagates the same flag
+#    into baseline_meta.partial_window.
+#
+# 2. SIGNAL_ERRORS DICT (for multi-signal tools)
+#
+#    If your tool returns several signals in one response and any individual
+#    signal can fail to compute, do not use a None-in-the-signals-dict to
+#    represent failure — that collapses "did not move" with "could not
+#    compute". Instead, return:
+#        "signals": {"signal_a": value_or_None, "signal_b": ...},
+#        "signal_errors": {},   # populated per failure: {"signal_a": "reason"}
+#    The LLM is told (in the playbook) to check signal_errors before
+#    claiming a signal is "flat". See compute_signals_for_day.py.
+#
+# 3. DICTIONARY BUNDLING (for tools that read a registered sheet)
+#
+#    If your tool reads a non-primary registered sheet, include the sheet's
+#    dictionary content in your response so the LLM has column-level
+#    semantics in the same payload as the data:
+#        "dictionary_path": "dict/<sheet>.md",
+#        "dictionary_md": <file content>,
+#    The primary sheet's dictionary is in the prompt at preflight, so
+#    primary-sheet tools should NOT bundle (would double-cost tokens).
+#    See get_rows.py — it uses a per-process cache so the dictionary is
+#    read from disk at most once per ./tune invocation.
+#
+# 4. ALWAYS ECHO INPUTS
+#
+#    Every success return includes the exact arguments the LLM passed in
+#    (date, platform, acquisition_source). The LLM cites these in the
+#    report; the user uses them to verify the tool computed the right
+#    cohort / segment. See any compute_*.py for examples.

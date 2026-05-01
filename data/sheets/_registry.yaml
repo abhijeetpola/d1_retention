@@ -1,0 +1,45 @@
+# Sheet registry. Engineer-managed.
+# Adding a new tab: append a stanza below with gid + dictionary + description.
+# tools/_sheet_store.py reads this file at module load.
+# tools/list_sheets.py exposes a sanitised view of it to the LLM.
+
+spreadsheet:
+  # Edit-mode reference (for human-readable links to the sheet UI).
+  id: "1nd0Z6KuZH55iuSsOvQROYBhuB9B8W3s0AKZClV3SZTg"
+
+  # Publish-to-web key. URL template:
+  #   https://docs.google.com/spreadsheets/d/e/{pub_key}/pub?gid={gid}&single=true&output=csv
+  pub_key: "2PACX-1vRdsHCCyYRo2TJK26NarGxaKHtMw-wjqwIiomrbQ55IfWeGlsOrR88gzGmwMX53saLMYi8D0X7C1QfF"
+
+refresh_schedule:
+  # First ./tune run on or after this IST wall-clock time refreshes pre_fetch sheets.
+  daily_threshold_ist: "11:00"
+  # urllib timeout per fetch attempt.
+  network_timeout_seconds: 30
+
+tabs:
+  app_health_daily:
+    gid: "403788154"
+    primary: true
+    pre_fetch: true
+    aliases: ["d1_retention"]
+    dictionary: "dict/app_health_daily.md"
+    description: "Primary 50-col daily fact table — D1/D7/D30, install/DAU, opt-in/login, etc."
+
+  app_d1_retention_health_daily:
+    gid: "33874310"
+    pre_fetch: true
+    dictionary: "dict/app_d1_retention_health_daily.md"
+    description: "Daily D1 cohort pivot — pre-aggregated; do not average daily rates."
+
+  app_d1_retention_health_weekly:
+    gid: "631119341"
+    pre_fetch: true
+    dictionary: "dict/app_d1_retention_health_weekly.md"
+    description: "Weekly D1 cohort pivot — sum(d1_users)/sum(d1_installs) per week. Use for week-over-week questions."
+
+  app_d1_retention_health_monthly:
+    gid: "1180382755"
+    pre_fetch: true
+    dictionary: "dict/app_d1_retention_health_monthly.md"
+    description: "Monthly D1 cohort pivot. Use for month-over-month comparisons."

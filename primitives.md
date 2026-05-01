@@ -7,7 +7,7 @@ Use the worked example as a starting point: copy it, edit the values, and
 paste it into `d1-retention-analysis.md` where you want the calculation
 to happen. Then run `./tune --verify` to confirm the call is valid.
 
-**9 tools registered.**
+**10 tools registered.**
 
 ---
 ## `compare_to_baseline`
@@ -194,12 +194,13 @@ flag_dip_days(metric="d1_corrected", platform="android",
 
 **What it does**
 
-Fetch raw daily rows for a chosen segment and date window. Use this when the PM's question is 'show me the data' — e.g. 'D1 each day for iOS paid in February' or 'compare Android organic last 30 days vs prior 30'. Do NOT use this when one number suffices (use compute_rolling_average / compare_to_baseline instead). Window resolution rules: (a) if date_from AND date_to are both given, that range is used; (b) if only date_to + days, window = [date_to - days + 1, date_to]; (c) if only date_from + days, window = [date_from, date_from + days - 1]; (d) if only days, window = the most recent `days` days in the sheet; (e) if nothing is given, defaults to the last 30 days. Hard cap: 400 rows. If the requested window would return more, the tool refuses and returns ok=false with a hint to narrow. Default columns: date, platform, acquisition_source, dau, installs, d1, d1_corrected, d0_uninstalls, pct_d0_notification_opt_in, pct_d0_login, avg_engagement_time_per_user. Pass columns=[...] to override (must be valid column names from the sheet).
+Fetch raw rows from a registered sheet for a chosen segment and (optional) date window. Use this when the PM's question is 'show me the data' rather than 'compute one number'. Default sheet is the primary daily fact table (`app_health_daily`). Pass sheet='app_d1_retention_health_daily' / `_weekly` / `_monthly` to read a cohort pivot instead — call `list_sheets()` to discover what is registered. Window resolution rules (only apply to sheets that have a `date` column): (a) if date_from AND date_to are both given, that range is used; (b) if only date_to + days, window = [date_to - days + 1, date_to]; (c) if only date_from + days, window = [date_from, date_from + days - 1]; (d) if only days, window = the most recent `days` days in the sheet; (e) if nothing is given, defaults to the last 30 days. For sheets WITHOUT a `date` column (the weekly/monthly pivots use `week` / `month` time buckets instead), the date-window parameters are ignored and all rows are returned (subject to the 400-row cap). Filter by `platform` and `acquisition_source` only if those columns exist on the chosen sheet. Hard cap: 400 rows. If the requested window would return more, the tool refuses and returns ok=false with a hint to narrow. On the primary sheet, the default column projection covers the most common diagnostic columns. On non-primary sheets, all columns are returned by default. Pass columns=[...] to override on either case.
 
 **Parameters**
 
 | Parameter | Type | Required | Default | Notes |
 |---|---|---|---|---|
+| `sheet` | string | no | `'app_health_daily'` |  |
 | `platform` | string | no | — |  |
 | `acquisition_source` | string | no | — |  |
 | `date_from` | string | no | — |  |
@@ -209,7 +210,7 @@ Fetch raw daily rows for a chosen segment and date window. Use this when the PM'
 
 **Return shape**
 
-Returns {ok, date_from, date_to, platform, acquisition_source, row_count, columns, rows: [{col: value, ...}, ...]}.
+Returns {ok, sheet, date_from, date_to, platform, acquisition_source, row_count, columns, rows: [{col: value, ...}, ...], dictionary_path, dictionary_md}. For non-primary sheets, dictionary_md carries the full column reference for that pivot — read it before interpreting the rows so you do not confuse counts with rates. The primary sheet's dictionary is in your prompt under '# Primary sheet — column dictionary' and is NOT bundled here (would double-cost tokens).
 
 **Worked example (copy this, edit values, paste into the playbook)**
 
@@ -226,11 +227,11 @@ get_rows(platform="android", acquisition_source="organic",
 
 ---
 
-## `list_files`
+## `list_docs`
 
 **What it does**
 
-List every file available in the sandbox data folder, each with a one-line description of its purpose.
+List the methodology and event-context documents available for `load_file`. These live under `data/docs/` and cover release notes, holiday calendars, known incidents, news events, the retention methodology reference, and acquisition campaigns.
 
 **Parameters**
 
@@ -238,12 +239,34 @@ _(no parameters)_
 
 **Return shape**
 
-Returns {'files': [{'path': '<relative path>', 'desc': '<one-line description>'}, ...]}. Use the description to decide which files are worth loading via load_file('<path>'). Empty desc means the file did not declare one.
+Returns {'files': [{'path': '<docs/...>', 'desc': '<one-line description>'}, ...]}. Sheets are reached via `get_rows`, not `load_file`. Sheet dictionaries arrive in the prompt (primary) or in `get_rows` responses (pivots) — neither needs to be discovered through this tool.
 
 **Worked example (copy this, edit values, paste into the playbook)**
 
 ```
-list_files()
+list_docs()
+```
+
+---
+
+## `list_sheets`
+
+**What it does**
+
+List all registered Google Sheets tabs the run can read from. Call this when the PM's question implies a non-default sheet (weekly or monthly retention questions) and you are not sure which sheet to use, or when you want to see column lists and dictionary paths before reading. Each entry has: name (the sheet identifier), primary (true for the default daily fact table), description (one line), dictionary (a Markdown file under data/docs that documents the sheet's columns — call `load_file(<dictionary>)` before reading the sheet for the first time in a run), aliases (alternate names the sheet answers to), schema_columns (best-known column list from the last fetch; may be empty until the sheet has been fetched once), last_fetched_at, and last_changed_at.
+
+**Parameters**
+
+_(no parameters)_
+
+**Return shape**
+
+Returns {ok, count, sheets: [...]}.
+
+**Worked example (copy this, edit values, paste into the playbook)**
+
+```
+list_sheets()
 ```
 
 ---
@@ -252,7 +275,7 @@ list_files()
 
 **What it does**
 
-Load one file from the sandbox data folder. Supported types: .csv, .tsv, .xlsx, .md, .txt, .json, .yaml, .yml. CSV/TSV/XLSX are rendered as Markdown tables. Other types are returned as text. The filename is relative to the data/ folder, e.g. 'docs/causal_doc.md' or 'sheets/d1_retention.csv'.
+Load one file from the sandbox data folder. Supported types: .csv, .tsv, .xlsx, .md, .txt, .json, .yaml, .yml. CSV/TSV/XLSX are rendered as Markdown tables. Other types are returned as text. The filename is relative to the data/ folder, e.g. 'dict/app_health_daily.md' or 'sheets/app_health_daily.csv'.
 
 **Parameters**
 

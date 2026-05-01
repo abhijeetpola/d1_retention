@@ -28,6 +28,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -47,24 +48,30 @@ err_console = Console(stderr=True)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAYBOOK_PATH = PROJECT_ROOT / "d1-retention-analysis.md"
-SHEET_PATH = PROJECT_ROOT / "data" / "sheets" / "d1_retention.csv"
+SHEET_PATH = PROJECT_ROOT / "data" / "sheets" / "app_health_daily.csv"
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
 OUTPUTS_DIR = PROJECT_ROOT / "outputs"
 MCP_SERVER_PATH = PROJECT_ROOT / "tune_mcp.py"
 
-ALLOWED_MCP_TOOLS = " ".join(
-    f"mcp__sandbox__{name}"
-    for name in (
-        "list_files",
-        "load_file",
-        "compute_rolling_average",
-        "compute_stable_baseline",
-        "compare_to_baseline",
-        "flag_dip_days",
-        "compute_signals_for_day",
-        "compute_acquisition_mix_shift",
-    )
-)
+def _allowed_mcp_tools() -> str:
+    """Derive the --allowed-tools list from the live MCP registry.
+
+    Single source of truth: every Python file under tools/ that registers a
+    @server.tool() becomes an allowed name automatically. Adding a new tool
+    means creating one file; the whitelist follows. Hand-maintained lists
+    drift the moment a new tool lands — we burned a v1.3 cycle on exactly
+    that bug. The probe imports tune_mcp.py (which transitively imports every
+    tool file) and reads back the registered names. Cached at module load.
+    """
+    import asyncio  # local — only used here
+    from importlib.machinery import SourceFileLoader
+
+    mod = SourceFileLoader("_whitelist_probe", str(MCP_SERVER_PATH)).load_module()
+    tools = asyncio.run(mod.server.list_tools())
+    return " ".join(f"mcp__sandbox__{t.name}" for t in tools)
+
+
+ALLOWED_MCP_TOOLS = _allowed_mcp_tools()
 
 # Friendly aliases for the --model flag. Anything not in this map is passed
 # through to the underlying CLI verbatim, so future model ids work without code
@@ -159,6 +166,15 @@ def run(
             "Or pass any literal claude-* model id. Default = whatever config.yaml says."
         ),
     ),
+    refresh: bool = typer.Option(
+        False,
+        "--refresh",
+        help=(
+            "Force a refresh of every pre_fetch sheet in data/sheets/_registry.yaml, "
+            "ignoring the daily 11:00 IST schedule. Useful when the source updated "
+            "mid-day and you want this run to use the latest."
+        ),
+    ),
 ) -> None:
     """Run the analysis end-to-end. An optional one-shot question may follow."""
     config = _load_config()
@@ -192,6 +208,8 @@ def run(
         model_display=model_display,
         pm_query=pm_query,
     )
+
+    _run_sheet_prefetch(force=refresh)
 
     output_path = _resolve_output_path(config["output_template"])
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -233,6 +251,7 @@ def run(
     )
     console.print(f"  Report:  [cyan]{output_path}[/cyan]")
     console.print(f"  Latest:  [cyan]{OUTPUTS_DIR / 'latest.md'}[/cyan]")
+    _print_run_summary(result)
     console.print()
 
     # Auto-open in default Markdown viewer (macOS).
@@ -328,6 +347,67 @@ def _run_doctor_checks() -> None:
     console.print(
         f"  [green]✓[/green] sheet present: {SHEET_PATH.name} ({rows:,} rows)"
     )
+
+    # 7b. Sheet registry parses; each tab's URL synthesizes; cache dir is writable.
+    try:
+        from tools._sheet_store import (
+            CACHE_DIR,
+            registry_summary,
+            synthesize_url,
+        )
+    except Exception as e:  # noqa: BLE001
+        _die(f"tools/_sheet_store.py failed to import: {type(e).__name__}: {e}")
+    try:
+        summary = registry_summary()
+    except Exception as e:  # noqa: BLE001
+        _die(f"data/sheets/_registry.yaml failed to parse: {type(e).__name__}: {e}")
+    console.print(
+        f"  [green]✓[/green] sheet registry parses; {summary['tab_count']} tab(s) registered: "
+        f"{', '.join(summary['tab_names'])}"
+    )
+    bad_url = []
+    for name in summary["tab_names"]:
+        try:
+            synthesize_url(name)
+        except Exception as e:  # noqa: BLE001
+            bad_url.append(f"{name}: {e}")
+    if bad_url:
+        _die(f"tab URL synthesis failed: {bad_url}")
+    console.print("  [green]✓[/green] all tab URLs synthesize cleanly")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    if not os.access(CACHE_DIR, os.W_OK):
+        _die(f"sheet cache dir not writable: {CACHE_DIR}")
+    console.print(
+        f"  [green]✓[/green] sheet cache writable: {CACHE_DIR.relative_to(PROJECT_ROOT)}"
+    )
+    console.print(
+        f"  [green]✓[/green] daily threshold = {summary['threshold_ist']} IST "
+        f"(latest passed = {summary['threshold_utc']})"
+    )
+
+    # 7c. Each registered sheet's dictionary file exists on disk.
+    from tools._sheet_store import _load_registry
+    reg = _load_registry()
+    missing_dicts: list[str] = []
+    for sheet_name, entry in reg["tabs"].items():
+        dict_rel = entry.get("dictionary")
+        if not dict_rel:
+            continue
+        dict_path = PROJECT_ROOT / "data" / dict_rel
+        if not dict_path.exists():
+            missing_dicts.append(f"{sheet_name} → data/{dict_rel}")
+    if missing_dicts:
+        _die(
+            "registered sheets reference dictionary files that do not exist:\n  "
+            + "\n  ".join(missing_dicts)
+        )
+    dict_dir = PROJECT_ROOT / "data" / "dict"
+    if dict_dir.exists():
+        dict_count = len([p for p in dict_dir.glob("*.md") if p.is_file()])
+        console.print(
+            f"  [green]✓[/green] data/dict/ present ({dict_count} sheet dictionar"
+            f"{'y' if dict_count == 1 else 'ies'})"
+        )
 
     # 8. data/docs/ folder.
     docs_dir = PROJECT_ROOT / "data" / "docs"
@@ -640,11 +720,164 @@ def _print_preflight(
     console.print()
 
 
+def _run_sheet_prefetch(*, force: bool) -> None:
+    """Refresh registered sheets before the LLM is invoked.
+
+    Default behaviour: refresh any pre_fetch tab whose last_fetched_at is
+    earlier than today's 11:00 IST threshold. With force=True (from
+    `./tune --refresh`), every pre_fetch tab is re-fetched regardless of
+    timestamp. Failures are non-fatal — a single sheet error becomes a
+    warning line and the run continues.
+    """
+    try:
+        from tools._sheet_store import (
+            force_refresh_all,
+            prefetch_due_sheets,
+        )
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[yellow]⚠ sheet store unavailable: {e}[/yellow]\n")
+        return
+
+    started = time.time()
+    try:
+        results = force_refresh_all() if force else prefetch_due_sheets()
+    except Exception as e:  # noqa: BLE001
+        console.print(f"[yellow]⚠ sheet pre-fetch failed: {e}[/yellow]\n")
+        return
+
+    if not results:
+        return
+
+    if force:
+        label = "Sheets (forced refresh)"
+    else:
+        label = "Sheets (daily threshold check)"
+
+    # Per-status visual treatment: glyph + verb shown for every sheet so the PM
+    # can see at a glance whether each sheet was newly fetched or read from cache.
+    GLYPH_VERB = {
+        "fetched":   ("[green]✓[/green]", "fetched"),    # network call this run, content updated
+        "no-change": ("[green]✓[/green]", "fetched"),    # network call this run, content identical
+        "skipped":   ("[dim]•[/dim]",     "cached"),     # within schedule window, no network call
+        "cached":    ("[yellow]⚠[/yellow]", "cached"),   # network failed, fell back to local copy
+        "error":     ("[red]✗[/red]",     "error"),      # no cache, network failed — unusable
+    }
+
+    console.print(f"[bold]{label}[/bold]")
+    name_width = max((len(r["name"]) for r in results), default=20)
+    for r in results:
+        glyph, verb = GLYPH_VERB.get(r["status"], ("•", r["status"]))
+        kb = max(1, r["bytes"] // 1024) if r["bytes"] else 0
+        ts = r.get("last_fetched_ist") or "(never)"
+        size_part = f"{kb} KB" if kb else "no cache"
+        # Detail varies by status. Cached/skipped: just the timestamp. Fetched/no-change:
+        # timestamp plus whether content actually changed. Error/cached(fallback): include the error message.
+        if r["status"] == "fetched":
+            detail = f"fetched at {ts} · content changed"
+        elif r["status"] == "no-change":
+            detail = f"checked at {ts} · content unchanged"
+        elif r["status"] == "skipped":
+            detail = f"using cache from {ts}"
+        elif r["status"] == "cached":
+            detail = f"using cache from {ts} · {r['message']}"
+        else:  # error
+            detail = r["message"]
+        console.print(
+            f"  {glyph} {r['name']:<{name_width}}  [dim]{verb}[/dim]  "
+            f"[dim]({size_part} · {detail})[/dim]"
+        )
+    elapsed = time.time() - started
+    fetched_count = sum(1 for r in results if r["status"] in {"fetched", "no-change"})
+    cached_count = sum(1 for r in results if r["status"] in {"skipped", "cached"})
+    summary_bits = []
+    if fetched_count:
+        summary_bits.append(f"{fetched_count} fetched")
+    if cached_count:
+        summary_bits.append(f"{cached_count} from cache")
+    summary = ", ".join(summary_bits) or "no sheets"
+    console.print(f"  [dim]Done in {elapsed:.1f}s · {summary}.[/dim]\n")
+
+
+def _print_run_summary(result: dict[str, Any]) -> None:
+    """Print a one-line summary of tool-call activity after the report renders.
+
+    Visible signal of how many tool calls fired and how many failed. Always
+    prints — a `0 total` line is itself diagnostic information (it means the
+    event-stream parser missed every tool call, which is a real bug worth
+    seeing). The failure count is highlighted in yellow and accompanied by a
+    one-line summary per failure when non-zero so the PM cannot scroll past it.
+    """
+    total = int(result.get("tool_calls_total", 0) or 0)
+    failed = int(result.get("tool_calls_failed", 0) or 0)
+    stream_errors = int(result.get("stream_parse_errors", 0) or 0)
+
+    if total == 0:
+        # Silent stream parse problem — surface it so the next debugging round can chase it.
+        suffix = (
+            f" · ({stream_errors} stream parse errors swallowed)"
+            if stream_errors else " · (counter saw zero events; renderer or stream-shape mismatch likely)"
+        )
+        console.print(
+            f"  [dim]Tool calls:[/dim]  [yellow]0 total{suffix}[/yellow]"
+        )
+        return
+
+    if failed == 0:
+        console.print(
+            f"  [dim]Tool calls:[/dim]  [dim]{total} total · all succeeded[/dim]"
+        )
+    else:
+        console.print(
+            f"  [dim]Tool calls:[/dim]  [yellow]{total} total · {failed} failed and retried[/yellow]"
+        )
+        for s in result.get("tool_failure_summaries", []) or []:
+            console.print(f"    [yellow]· {s}[/yellow]")
+    if stream_errors:
+        console.print(
+            f"  [dim]Note:[/dim]  [yellow]{stream_errors} stream parse errors were swallowed during the run.[/yellow]"
+        )
+
+
+_PRIMARY_DICT_PATH = PROJECT_ROOT / "data" / "dict" / "app_health_daily.md"
+_PRIMARY_DICT_CACHE: str | None = None
+
+
+def _primary_dictionary() -> str:
+    """Read the primary sheet's dictionary, cached per-process.
+
+    Loaded into the user message at preflight so the LLM always has full
+    column-level semantics for the primary sheet — including which columns
+    are counts vs rates vs derived. Without this in context, the LLM has
+    been observed substituting count columns for rate columns when its
+    initial column-name guess fails (the d0_uninstall_rate incident).
+    """
+    global _PRIMARY_DICT_CACHE
+    if _PRIMARY_DICT_CACHE is None:
+        if _PRIMARY_DICT_PATH.exists():
+            _PRIMARY_DICT_CACHE = _PRIMARY_DICT_PATH.read_text(encoding="utf-8")
+        else:
+            _PRIMARY_DICT_CACHE = ""
+    return _PRIMARY_DICT_CACHE
+
+
 def _build_user_message(*, prose: str, pm_query: str = "") -> str:
     parts = [
         "# PM playbook (the prose to follow)",
         "",
         prose.strip(),
+        "",
+        "---",
+        "",
+        "# Primary sheet — column dictionary",
+        "",
+        "Authoritative column reference for `sheets/app_health_daily.csv` "
+        "(the default sheet for every diagnostic). Use this to look up what "
+        "each column means and which columns are counts vs rates vs derived. "
+        "Pivot dictionaries arrive bundled in the corresponding `get_rows` "
+        "responses; methodology and event-context docs in `data/docs/` are "
+        "loaded on demand via `load_file`.",
+        "",
+        _primary_dictionary().strip() or "_(dictionary file missing)_",
         "",
         "---",
         "",
@@ -659,9 +892,10 @@ def _build_user_message(*, prose: str, pm_query: str = "") -> str:
         "date_to, days, columns)` when the question is \"show me the data\" "
         "rather than \"compute one number.\"",
         "",
-        "- `list_files()` — see all files under data/",
+        "- `list_docs()` — discover methodology and event-context docs available for `load_file`",
+        "- `list_sheets()` — discover registered sheets, their dictionaries, and freshness",
         "- `load_file('docs/<file.md>')` — load a context document",
-        "- `load_file('sheets/d1_retention.csv')` — load the FULL sheet "
+        "- `load_file('sheets/app_health_daily.csv')` — load the FULL primary sheet "
         "(last resort; prefer `get_rows` for targeted slices)",
     ]
     if pm_query:
@@ -712,6 +946,16 @@ def _invoke_claude(
         # `assistant` event and inside `stream_event` envelopes. Use the tool_use
         # id (when present) to print each call exactly once.
         "seen_tool_use_ids": set(),
+        # Run-summary counters. The activity-feed renderers bump these so we
+        # can print a "Tool calls: X total (Y failed and retried)" line after
+        # the report renders.
+        "tool_calls_total": 0,
+        "tool_calls_failed": 0,
+        "tool_failure_summaries": [],
+        # Defensive: count exceptions the stream-event handler swallows. If
+        # this is non-zero post-run, the activity-feed parser hit an event
+        # shape it did not expect — surface in the run summary so we know.
+        "stream_parse_errors": 0,
     }
     stderr_text = ""
 
@@ -751,7 +995,9 @@ def _invoke_claude(
             try:
                 _handle_stream_event(event, progress, state)
             except Exception:
-                # Never let a parsing quirk kill the whole run.
+                # Never let a parsing quirk kill the whole run, but DO count it
+                # so the run-summary can surface the swallowed errors.
+                state["stream_parse_errors"] = state.get("stream_parse_errors", 0) + 1
                 continue
 
         proc.wait()
@@ -782,6 +1028,10 @@ def _invoke_claude(
         "cost_usd": float(payload.get("total_cost_usd", 0.0) or 0.0),
         "input_tokens": int(usage.get("input_tokens", 0) or 0),
         "output_tokens": int(usage.get("output_tokens", 0) or 0),
+        "tool_calls_total": int(state.get("tool_calls_total", 0) or 0),
+        "tool_calls_failed": int(state.get("tool_calls_failed", 0) or 0),
+        "tool_failure_summaries": list(state.get("tool_failure_summaries", []) or []),
+        "stream_parse_errors": int(state.get("stream_parse_errors", 0) or 0),
     }
 
 
@@ -816,7 +1066,13 @@ def _invoke_codex(
     ) as f:
         last_msg_path = Path(f.name)
 
-    state: dict[str, Any] = {"events": 0}
+    state: dict[str, Any] = {
+        "events": 0,
+        "tool_calls_total": 0,
+        "tool_calls_failed": 0,
+        "tool_failure_summaries": [],
+        "stream_parse_errors": 0,
+    }
     stderr_text = ""
     start_ts = datetime.now()
 
@@ -857,6 +1113,7 @@ def _invoke_codex(
             try:
                 _handle_codex_event(event, progress, state)
             except Exception:
+                state["stream_parse_errors"] = state.get("stream_parse_errors", 0) + 1
                 continue
 
         proc.wait()
@@ -886,6 +1143,10 @@ def _invoke_codex(
         "cost_usd": 0.0,
         "input_tokens": 0,
         "output_tokens": 0,
+        "tool_calls_total": int(state.get("tool_calls_total", 0) or 0),
+        "tool_calls_failed": int(state.get("tool_calls_failed", 0) or 0),
+        "tool_failure_summaries": list(state.get("tool_failure_summaries", []) or []),
+        "stream_parse_errors": int(state.get("stream_parse_errors", 0) or 0),
     }
 
 
@@ -923,26 +1184,24 @@ def _handle_codex_event(
         )
         if not normalised_name.startswith("mcp__"):
             normalised_name = f"mcp__sandbox__{tool_name}"
+        state["tool_calls_total"] = state.get("tool_calls_total", 0) + 1
         _print_tool_call(progress, normalised_name, tool_input)
         return
 
     if etype in ("mcp_tool_call_end", "tool_call_end", "function_call_output"):
         result = msg.get("result") or msg.get("output") or msg.get("content") or ""
-        if isinstance(result, dict):
-            result_text = json.dumps(result)
-        elif isinstance(result, list):
-            parts = []
-            for item in result:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    parts.append(item.get("text", ""))
-                elif isinstance(item, str):
-                    parts.append(item)
-            result_text = "".join(parts)
-        else:
-            result_text = str(result or "")
+        result_text = _extract_block_text(result)
+        is_error_flag = bool(msg.get("is_error") or msg.get("error"))
         summary = _summarize_tool_result(result_text)
-        if summary.startswith("(failed"):
+        is_error_summary = summary.startswith("(failed")
+        if is_error_flag and not is_error_summary:
+            snippet = result_text.strip().splitlines()[0] if result_text.strip() else "tool returned an error"
+            summary = f"(failed: {snippet[:120]})"
+            is_error_summary = True
+        if is_error_summary:
             _activity_print(progress, f"[red]← {summary}[/red]")
+            state["tool_calls_failed"] = state.get("tool_calls_failed", 0) + 1
+            state.setdefault("tool_failure_summaries", []).append(summary)
         else:
             _activity_print(progress, f"[dim]← {summary}[/dim]")
         return
@@ -977,6 +1236,7 @@ def _handle_stream_event(
                     continue
                 if tu_id:
                     state["seen_tool_use_ids"].add(tu_id)
+                state["tool_calls_total"] = state.get("tool_calls_total", 0) + 1
                 _print_tool_call(
                     progress,
                     block.get("name", ""),
@@ -989,7 +1249,10 @@ def _handle_stream_event(
         message = event.get("message") or {}
         for block in message.get("content") or []:
             if block.get("type") == "tool_result":
-                _print_tool_result(progress, block)
+                failed_summary = _print_tool_result(progress, block)
+                if failed_summary:
+                    state["tool_calls_failed"] = state.get("tool_calls_failed", 0) + 1
+                    state.setdefault("tool_failure_summaries", []).append(failed_summary)
         return
 
     if etype == "stream_event":
@@ -1004,6 +1267,7 @@ def _handle_stream_event(
                     return
                 if tu_id:
                     state["seen_tool_use_ids"].add(tu_id)
+                state["tool_calls_total"] = state.get("tool_calls_total", 0) + 1
                 _print_tool_call(progress, cb.get("name", ""), cb.get("input") or {})
         return
 
@@ -1013,8 +1277,8 @@ def _handle_stream_event(
 def _print_tool_call(
     progress: Progress | None, tool_name: str, tool_input: dict[str, Any]
 ) -> None:
-    if tool_name.endswith("__list_files"):
-        line = "→ Listing files available in data/..."
+    if tool_name.endswith("__list_docs"):
+        line = "→ Listing context docs in data/docs/..."
     elif tool_name.endswith("__load_file"):
         filename = (tool_input or {}).get("filename") or "<unknown>"
         if filename.startswith("sheets/"):
@@ -1028,23 +1292,70 @@ def _print_tool_call(
     _activity_print(progress, f"[dim]{line}[/dim]")
 
 
-def _print_tool_result(progress: Progress | None, block: dict[str, Any]) -> None:
-    raw = block.get("content")
-    text = ""
-    if isinstance(raw, str):
-        text = raw
-    elif isinstance(raw, list):
-        for item in raw:
-            if isinstance(item, dict) and item.get("type") == "text":
-                text += item.get("text", "")
-            elif isinstance(item, str):
-                text += item
+def _print_tool_result(progress: Progress | None, block: dict[str, Any]) -> str | None:
+    """Render one tool_result block as a single ← line.
 
+    Returns the failure summary string when the result was a failure (so the
+    caller can bump a run-level counter), or None on success.
+
+    The block can carry `is_error: true` (set by Claude when the MCP server
+    flagged an error) AND/OR carry an `ok: false` payload inside the content.
+    Either signal alone is enough to render this as a failure — we check both
+    so a parser quirk in either layer cannot make a real failure look silent.
+    """
+    raw = block.get("content")
+    text = _extract_block_text(raw)
+
+    is_error_flag = bool(block.get("is_error"))
     summary = _summarize_tool_result(text)
-    if summary.startswith("(failed"):
+    is_error_summary = summary.startswith("(failed")
+
+    if is_error_flag and not is_error_summary:
+        # Envelope says error but the body did not parse as ok:false.
+        # Fall back to rendering whatever text is in the body, truncated.
+        snippet = text.strip().splitlines()[0] if text.strip() else "tool returned an error"
+        summary = f"(failed: {snippet[:120]})"
+        is_error_summary = True
+
+    if is_error_summary:
         _activity_print(progress, f"[red]← {summary}[/red]")
-    else:
-        _activity_print(progress, f"[dim]← {summary}[/dim]")
+        return summary
+    _activity_print(progress, f"[dim]← {summary}[/dim]")
+    return None
+
+
+def _extract_block_text(raw: Any) -> str:
+    """Pull the textual payload from a tool_result.content of any shape."""
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        # Some envelopes wrap a single dict (with "type": "text" + "text", or just "text").
+        if "text" in raw:
+            return str(raw["text"])
+        # Fallback: serialize so the regex / JSON-parse paths can still see it.
+        try:
+            return json.dumps(raw)
+        except (TypeError, ValueError):
+            return str(raw)
+    if isinstance(raw, list):
+        parts: list[str] = []
+        for item in raw:
+            if isinstance(item, dict):
+                if item.get("type") == "text" and "text" in item:
+                    parts.append(str(item["text"]))
+                elif "text" in item:
+                    parts.append(str(item["text"]))
+                else:
+                    try:
+                        parts.append(json.dumps(item))
+                    except (TypeError, ValueError):
+                        parts.append(str(item))
+            elif isinstance(item, str):
+                parts.append(item)
+        return "".join(parts)
+    return str(raw)
 
 
 _ROWS_COLS_RE = re.compile(r"(\d{1,3}(?:,\d{3})*|\d+)\s*rows\s*×\s*(\d+)\s*columns?")

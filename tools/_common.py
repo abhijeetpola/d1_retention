@@ -23,7 +23,7 @@ from mcp.server.fastmcp import FastMCP
 # tools/_common.py is one level below project root.
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = (PROJECT_ROOT / "data").resolve()
-SHEET_PATH = (DATA_DIR / "sheets" / "d1_retention.csv").resolve()
+PRIMARY_SHEET = "app_health_daily"
 
 # The single FastMCP instance every tool registers against.
 server = FastMCP(name="sandbox")
@@ -37,12 +37,12 @@ VALID_PLATFORMS: tuple[str, ...] = ("android", "ios")
 VALID_SOURCES: tuple[str, ...] = ("organic", "paid", "WTA", "others", "All")
 MIX_SOURCES: tuple[str, ...] = ("organic", "paid", "WTA", "others")  # excludes "All"
 
-# For list_files / load_file description parsing.
+# For list_docs / load_file description parsing.
 _DESC_RE = re.compile(r"<!--\s*desc:\s*(.+?)\s*-->", re.IGNORECASE)
 _BUILTIN_DESCS: dict[str, str] = {
-    "sheets/d1_retention.csv": (
-        "Daily retention sheet — 50 cols × all platforms × all acquisition "
-        "sources × dates from 2025-05-01. Prefer `get_rows(...)` for "
+    "sheets/app_health_daily.csv": (
+        "Primary daily fact table — 50 cols × all platforms × all acquisition "
+        "sources × dates from 2025-05-01. Prefer `get_rows(sheet=...)` for "
         "targeted slices; load this whole file only when you need the full "
         "breakdown or older history `get_rows` cannot reach."
     ),
@@ -52,21 +52,32 @@ _BUILTIN_DESCS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # Sheet loading + caching.
 # The MCP server is short-lived (one subprocess per ./tune invocation), so a
-# process-lifetime cache is enough.
+# process-lifetime cache is enough. _SHEET_CACHE is keyed by sheet name so
+# all registered sheets coexist in memory once they have been read.
 # ---------------------------------------------------------------------------
 
-_SHEET_CACHE: pd.DataFrame | None = None
+_SHEET_CACHE: dict[str, pd.DataFrame] = {}
 
 
-def sheet() -> pd.DataFrame:
-    """Return the full retention sheet as a DataFrame, cached after first read."""
-    global _SHEET_CACHE
-    if _SHEET_CACHE is None:
-        df = pd.read_csv(SHEET_PATH, thousands=",", low_memory=False)
+def sheet(name: str = PRIMARY_SHEET) -> pd.DataFrame:
+    """Return the named sheet as a DataFrame, cached after first read.
+
+    Routes through the sheet store so the file is fetched / refreshed if due.
+    Default is the primary daily fact table; pass a different name to read
+    one of the cohort pivots (call list_sheets to see what is available).
+    """
+    from tools._sheet_store import ensure_fresh, _resolve_alias  # local import — avoids cycle
+
+    canonical = _resolve_alias(name)
+    if canonical in _SHEET_CACHE:
+        return _SHEET_CACHE[canonical]
+    path = ensure_fresh(canonical)
+    df = pd.read_csv(path, thousands=",", low_memory=False)
+    if "date" in df.columns:
         df["date"] = pd.to_datetime(df["date"], errors="coerce")
         df = df.dropna(subset=["date"]).sort_values("date").reset_index(drop=True)
-        _SHEET_CACHE = df
-    return _SHEET_CACHE
+    _SHEET_CACHE[canonical] = df
+    return df
 
 
 def coerce_metric(s: pd.Series) -> pd.Series:
@@ -93,33 +104,43 @@ def validate_segment(platform: str, acquisition_source: str) -> str | None:
 
 def get_rows(
     *,
+    sheet_name: str = PRIMARY_SHEET,
     platform: str | None = None,
     acquisition_source: str | None = None,
     date_from: str | pd.Timestamp | None = None,
     date_to: str | pd.Timestamp | None = None,
 ) -> pd.DataFrame:
-    """Return rows from the retention sheet, optionally filtered.
+    """Return rows from a registered sheet, optionally filtered.
 
-    All parameters are optional. Pass any combination of platform,
+    All filter parameters are optional. Pass any combination of platform,
     acquisition_source, and a date window. Dates can be strings ('2026-04-01')
     or pandas Timestamps. The returned frame is a copy you can edit safely.
+
+    `sheet_name` defaults to the primary daily fact table. Pass another
+    registered name (e.g. `"app_d1_retention_health_weekly"`) to read a
+    cohort pivot instead. Only rows whose `date` column parses successfully
+    are kept; sheets without a `date` column return all rows.
+
+    Filters by `platform` and `acquisition_source` are applied only when
+    those columns exist on the chosen sheet (the cohort pivots may not have
+    them).
 
     Example:
         rows = get_rows(platform="android", acquisition_source="organic",
                         date_from="2026-04-01", date_to="2026-04-07")
     """
-    df = sheet()
+    df = sheet(sheet_name)
     mask = pd.Series(True, index=df.index)
-    if platform is not None:
+    if platform is not None and "platform" in df.columns:
         mask &= df["platform"] == platform
-    if acquisition_source is not None:
+    if acquisition_source is not None and "acquisition_source" in df.columns:
         mask &= df["acquisition_source"] == acquisition_source
-    if date_from is not None:
+    if date_from is not None and "date" in df.columns:
         d = pd.to_datetime(date_from, errors="coerce")
         if pd.isna(d):
             raise ValueError(f"date_from not parseable: {date_from!r}")
         mask &= df["date"] >= d
-    if date_to is not None:
+    if date_to is not None and "date" in df.columns:
         d = pd.to_datetime(date_to, errors="coerce")
         if pd.isna(d):
             raise ValueError(f"date_to not parseable: {date_to!r}")
@@ -230,7 +251,7 @@ def filter_window(
 
 
 # ---------------------------------------------------------------------------
-# File access helpers — used by list_files / load_file.
+# File access helpers — used by list_docs / load_file.
 # Path-traversal protected: every read resolves under DATA_DIR or is rejected.
 # ---------------------------------------------------------------------------
 

@@ -1,5 +1,7 @@
-<!-- desc: Definitions of every column in d1_retention.csv — d1 (return-aligned) vs d1_corrected (install-aligned), engagement caveats, data gaps -->
-# Data dictionary — `sheets/d1_retention.csv`
+<!-- desc: Definitions of every column in app_health_daily.csv — d1 (return-aligned) vs d1_corrected (install-aligned), engagement caveats, data gaps -->
+# Data dictionary — `sheets/app_health_daily.csv`
+
+> Authoritative column reference for `sheets/app_health_daily.csv`. The playbook (`d1-retention-analysis.md`) carries the diagnostic flow and references columns by name with one-line meanings; this file carries the column-level depth — every column, the data gaps section, and methodology rationale. Load via `load_file('dict/app_health_daily.md')` when the diagnostic needs more than the playbook's inline summaries.
 
 Reference for what each column means. Use this to interpret numbers and to decide between `d1` and `d1_corrected` — they are aligned to **different dates** and confusing them produces wrong verdicts.
 
@@ -62,7 +64,11 @@ For row dated **April 16**:
 | `d7_cohort_day` = `date − 7` | Cohort whose D7 falls today. |
 | `d30_cohort_day` = `date − 30` | Cohort whose D30 falls today. |
 
-**Pivot rule (no exceptions):** weekly or monthly D1/D7/D30 must come from the dedicated pivot tables (`app_d1_retention_health_weekly` etc.) — reachable via `load_file('sheets/d1_retention.csv')` for the full historical breakdown. **Never average daily rates to compute weekly/monthly retention.** Averaging daily rates ≠ true cohort rate.
+**Pivot rule (no exceptions, authoritative version):** weekly or monthly D1/D7/D30 must come from the dedicated cohort-aggregated pivots — `app_d1_retention_health_weekly` (full segment matrix) or `app_d1_retention_health_monthly` (Android × {WTA, paid} only). The pivots compute `sum(d1_users) / sum(d1_installs)` per period — the methodology-correct rate.
+
+**Never average daily rates** from this primary fact table to produce a weekly or monthly number. Averaging daily rates ignores install-day weighting and gives a biased result: small days and large days contribute equally to the mean even though they represent very different numbers of users. If the right pivot does not exist for the segment in question, sum the absolute counts (`d1_users`, `d1_installs`) yourself over the window from this sheet, then divide once.
+
+The playbook's "Choosing the right sheet" section is the procedural version of this rule; it tells the LLM which `get_rows(sheet=...)` call to make for a given question. That section follows from the rationale here.
 
 ## DAU channel breakdown
 
@@ -112,6 +118,8 @@ A push-notification outage shows up as a sudden drop in `pct_dau_via_notificatio
 
 These signals matter for the diagnostic but are **not** in the sheet. The LLM should name them as gaps when relevant, not pretend to evaluate them.
 
+**Partial-window baselines are a related class of gap.** When `compute_rolling_average` is asked for a 7-day window but only N < 7 days of data exist for the (metric × platform × source) combination, the tool returns the mean of those N days with a `partial_window: true` flag and a `coverage_pct` value. `compare_to_baseline` propagates this through `baseline_meta.partial_window`. A delta computed against a 5-of-7 mean is materially noisier than a delta computed against a full-7 mean — the playbook's "Partial-baseline rule" requires the LLM to mark the rolling row as PARTIAL and weaken the severity badge by one step in this case. Treat partial windows as a data gap that softens the verdict, not as silent input to a confident severity label.
+
 ### Priority 1 — critical (block diagnosis)
 
 | Gap | Stage |
@@ -138,7 +146,3 @@ These signals matter for the diagnostic but are **not** in the sheet. The LLM sh
 | D0 personalisation completion. | 2 |
 | D1 notification content type. | 3 |
 | D1 notification send time. | 3 |
-
-## Headline rule
-
-**"D1 retention" = Android organic D1** unless the PM's query asks otherwise. Use `d1_corrected` for the headline (install-cohort-aligned). Use raw `d1` for anomaly spotting where the day-of-return matters more than the day-of-install.

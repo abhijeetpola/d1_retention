@@ -11,7 +11,7 @@ import json
 from typing import Any
 
 from tools._common import render_table, safe_resolve, server
-from tools.list_files import list_files
+from tools.list_docs import list_docs
 
 
 @server.tool(
@@ -20,7 +20,7 @@ from tools.list_files import list_files
         "Supported types: .csv, .tsv, .xlsx, .md, .txt, .json, .yaml, .yml. "
         "CSV/TSV/XLSX are rendered as Markdown tables. Other types are returned "
         "as text. The filename is relative to the data/ folder, e.g. "
-        "'docs/causal_doc.md' or 'sheets/d1_retention.csv'."
+        "'dict/app_health_daily.md' or 'sheets/app_health_daily.csv'."
     )
 )
 def load_file(filename: str) -> dict[str, Any]:
@@ -30,12 +30,12 @@ def load_file(filename: str) -> dict[str, Any]:
             "ok": False,
             "error": (
                 f"refusing to load {filename!r}: must be a relative path "
-                f"that stays within data/. Try list_files() to see what is "
-                f"available."
+                f"that stays within data/. Try list_docs() to see what context "
+                f"docs are available; sheets are reached via get_rows."
             ),
         }
     if not target.exists():
-        available = list_files()["files"]
+        available = list_docs()["files"]
         return {
             "ok": False,
             "error": f"file not found: {filename!r}",

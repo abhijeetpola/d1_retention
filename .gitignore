@@ -2,6 +2,11 @@
 outputs/*
 !outputs/.gitkeep
 
+# Auto-fetched sheet cache (managed by tools/_sheet_store.py).
+# Only the primary app_health_daily.csv is checked in.
+data/sheets/_cache/
+data/sheets/app_d1_retention_health_*.csv
+
 # Python
 __pycache__/
 *.py[cod]

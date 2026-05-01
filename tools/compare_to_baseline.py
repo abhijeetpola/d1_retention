@@ -102,6 +102,11 @@ def compare_to_baseline(
         baseline_meta = {
             "window": "trailing 7 days",
             "n_observations": ra["n_observations"],
+            # Propagated from compute_rolling_average. The LLM should weaken
+            # the severity verdict when partial_window is true (a 5-of-7 mean
+            # is materially noisier than a full-7 mean).
+            "partial_window": ra.get("partial_window", False),
+            "coverage_pct": ra.get("coverage_pct", 100.0),
         }
 
     # Metric values in this sheet are fractional (0.293 = 29.3%). Convert the

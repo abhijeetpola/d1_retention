@@ -62,6 +62,7 @@ def compute_rolling_average(
             ),
         }
     n = aggregate(rows, metric, "count") or 0
+    n = int(n)
     return {
         "ok": True,
         "metric": metric,
@@ -71,5 +72,10 @@ def compute_rolling_average(
         "start_date": str(start.date()),
         "window_days": window_days,
         "average": round(float(average), 6),
-        "n_observations": int(n),
+        "n_observations": n,
+        # Partial-window flag: true when fewer days had data than were requested.
+        # The LLM should weaken its severity verdict when the baseline is partial
+        # (a 5-of-7 mean is materially noisier than a full-7 mean).
+        "partial_window": n < window_days,
+        "coverage_pct": round(n / window_days * 100.0, 1) if window_days else 0.0,
     }
