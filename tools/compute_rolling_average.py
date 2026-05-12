@@ -8,7 +8,9 @@ import pandas as pd
 
 from tools._common import (
     aggregate,
+    cohort_rate,
     get_rows,
+    RATE_METRICS,
     server,
     validate_segment,
 )
@@ -52,7 +54,11 @@ def compute_rolling_average(
     if metric not in rows.columns:
         return {"ok": False, "error": f"unknown metric: {metric!r}"}
 
-    average = aggregate(rows, metric, "mean")
+    if metric in RATE_METRICS:
+        users_col, installs_col = RATE_METRICS[metric]
+        average = cohort_rate(rows, users_col, installs_col)
+    else:
+        average = aggregate(rows, metric, "mean")
     if average is None:
         return {
             "ok": False,

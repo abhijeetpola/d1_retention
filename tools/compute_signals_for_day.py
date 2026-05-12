@@ -86,7 +86,7 @@ def compute_signals_for_day(
     # Cross-platform iOS comparator for the Stage-1 platform-check rule.
     ios_cmp_target = compare_to_baseline(
         date=str(target.date()),
-        metric="d1",
+        metric="d1_corrected",
         platform="ios",
         acquisition_source=acquisition_source,
         baseline_kind="rolling7",
@@ -102,7 +102,7 @@ def compute_signals_for_day(
     # Same-segment D1 movement on `date`.
     plat_cmp = compare_to_baseline(
         date=str(target.date()),
-        metric="d1",
+        metric="d1_corrected",
         platform=platform,
         acquisition_source=acquisition_source,
         baseline_kind="rolling7",

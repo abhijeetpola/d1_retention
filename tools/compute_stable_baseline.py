@@ -9,7 +9,9 @@ import pandas as pd
 
 from tools._common import (
     coerce_metric,
+    cohort_rate,
     get_rows,
+    RATE_METRICS,
     server,
     validate_segment,
 )
@@ -98,9 +100,24 @@ def compute_stable_baseline(
         q1, q3 = np.percentile(values, [25, 75])
         iqr = q3 - q1
         lo, hi = q1 - 1.5 * iqr, q3 + 1.5 * iqr
-        kept = values[(values >= lo) & (values <= hi)]
-        outliers_removed = int(len(values) - len(kept))
-        values = kept
+        mask = (values >= lo) & (values <= hi)
+        outliers_removed = int((~mask).sum())
+        values = values[mask]
+        df = df[mask]
+
+    if metric in RATE_METRICS:
+        users_col, installs_col = RATE_METRICS[metric]
+        baseline_val = cohort_rate(df, users_col, installs_col)
+        if baseline_val is None:
+            return {
+                "ok": False,
+                "error": (
+                    f"no installs in window for {metric!r} "
+                    f"({platform} / {acquisition_source})"
+                ),
+            }
+    else:
+        baseline_val = float(values.mean())
 
     return {
         "ok": True,
@@ -109,7 +126,7 @@ def compute_stable_baseline(
         "acquisition_source": acquisition_source,
         "weekday": weekday_name,
         "baseline_start_date": str(start.date()),
-        "baseline": round(float(values.mean()), 6),
+        "baseline": round(baseline_val, 6),
         "n_observations": int(values.size),
         "outliers_removed": outliers_removed,
     }

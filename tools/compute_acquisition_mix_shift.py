@@ -112,11 +112,10 @@ def compute_acquisition_mix_shift(
         today_installs = float(today_row[s])
         today_share = float(today_row.get(f"{s}__share") or 0.0)
         baseline_mean_installs = float(baseline_rows[s].mean())
-        baseline_share_series = baseline_rows[f"{s}__share"].dropna()
+        baseline_total_sum = float(baseline_rows["__total"].sum())
         baseline_mean_share = (
-            float(baseline_share_series.mean())
-            if not baseline_share_series.empty
-            else 0.0
+            float(baseline_rows[s].sum() / baseline_total_sum)
+            if baseline_total_sum > 0 else 0.0
         )
         share_delta_pp = round((today_share - baseline_mean_share) * 100.0, 2)
         installs_ratio = (

@@ -28,6 +28,18 @@ PRIMARY_SHEET = "app_health_daily"
 # The single FastMCP instance every tool registers against.
 server = FastMCP(name="sandbox")
 
+# Maps retention rate metric names to their underlying count column pairs.
+# Used by compute_rolling_average and compute_stable_baseline to call cohort_rate()
+# instead of mean() — the methodology-correct aggregation for rate columns.
+RATE_METRICS: dict[str, tuple[str, str]] = {
+    "d1":            ("d1_users",  "d1_installs"),
+    "d1_corrected":  ("d1_users",  "d1_installs"),
+    "d7":            ("d7_users",  "d7_installs"),
+    "d7_corrected":  ("d7_users",  "d7_installs"),
+    "d30":           ("d30_users", "d30_installs"),
+    "d30_corrected": ("d30_users", "d30_installs"),
+}
+
 
 # ---------------------------------------------------------------------------
 # Shared constants — used across multiple tool files.

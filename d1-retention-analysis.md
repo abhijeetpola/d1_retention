@@ -121,7 +121,7 @@ Comparison is always against the **7-day rolling average** ending the day BEFORE
 
 **Oscillation rule:** if D1 alternates above and below the rolling avg over 3+ consecutive days without settling, flag it as instability — variance, not trend.
 
-To get the list of flagged days, call `flag_dip_days(metric="d1", platform="android", acquisition_source="organic", days_back=N)` for the window the PM's query implies.
+To get the list of flagged days, call `flag_dip_days(metric="d1_corrected", platform="android", acquisition_source="organic", days_back=N)` for the window the PM's query implies.
 
 ## D1 diagnostic checklist
 
