@@ -45,7 +45,7 @@ def compute_stable_baseline(
     acquisition_source: str,
     weekday: str | None = None,
     baseline_start_date: str = "2026-01-01",
-    baseline_end_date: str | None = None,
+    baseline_end_date: str | None = None,  # MUST pass target_date − 1; if None, baseline includes today and contaminates itself
     exclude_outliers_iqr: bool = True,
 ) -> dict[str, Any]:
     err = validate_segment(platform, acquisition_source)

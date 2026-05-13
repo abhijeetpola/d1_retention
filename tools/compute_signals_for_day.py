@@ -203,7 +203,7 @@ def compute_signals_for_day(
     return {
         "ok": True,
         "date": str(target.date()),
-        "d1_cohort_day": str(cohort.date()),
+        "return_day": str((target + pd.Timedelta(days=1)).date()),
         "platform": platform,
         "acquisition_source": acquisition_source,
         "signals": {
@@ -221,9 +221,9 @@ def compute_signals_for_day(
         # the signal "did not move" — the signal could not be computed at all.
         "signal_errors": signal_errors,
         "notes": [
-            "platform_d1_delta_pp = today's D1 (return-aligned) vs trailing 7-day mean.",
+            "platform_d1_delta_pp = today's D1 (install-aligned, d1_corrected) vs trailing 7-day mean.",
             "ios_d1_delta_pp = same-day iOS comparator for the platform-check rule.",
-            "D0 deltas are evaluated on d1_cohort_day (= date, the install day).",
+            "D0 deltas are evaluated on date (the install day); return_day = date + 1 is when D1 is measured.",
             "d0_uninstall_rate is Android-only (iOS does not provide this signal).",
             "installs_ratio compares cohort-day installs to the trailing 7-day mean.",
             "If a signal is null AND has an entry in signal_errors, treat as 'could not compute', not 'did not move'.",

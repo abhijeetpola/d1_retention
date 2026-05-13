@@ -4,6 +4,8 @@
 >
 > **Sections you will tune most:** "How to pick the window", "D1 diagnostic checklist" (Stages 1–3), and "Report shape". The "Hard rules" section at the bottom is methodology canon — change it rarely and only on purpose.
 
+> **Date convention:** when a PM names a date, treat it as the day users installed — not the day they returned. "May 12" means users who installed on May 12; their D1 is measured on May 13.
+
 ## What you have access to
 
 There is no inlined data table in this prompt — every retention number is fetched through an MCP tool at run time, against the full sheet. Pick the segment (`platform`, `acquisition_source`) and the window (`date_from` / `date_to` / `days`) that match the PM's query. Defaults exist for when the query is silent.
@@ -214,7 +216,7 @@ Open the report with a one-line severity banner, then a 6-row table. Every repor
 | Cohort / segment    | <YYYY-MM-DD install cohort> · <platform> · <acquisition_source>   |
 | D1 Retention        | <value%>                                                          |
 | vs Last 7 Days      | <±X.XXpp> (avg <value%>)                                          |
-| vs Typical <Weekday>| <±X.XXpp> (avg <value%>)                                          |
+| vs Typical <Weekday>| <±X.XXpp> (avg <value%>) — basis for <🔴/🟡/🟢> <ALERT/FLAG/NORMAL/RISE FLAG/RISE ALERT> |
 | Primary driver      | <plain English one-sentence cause — see output rules below>       |
 | iOS comparison      | <±X.XXpp> (<iOS direction in plain English> → <looks segment-specific | likely external | unclear>) |
 ```
@@ -242,7 +244,7 @@ Open the report with a one-line severity banner, then a 6-row table. Every repor
 - Never use internal framework terms: Stage 1 / Stage 2 / Stage 3, "hook", "rolling-7", "IQR-clean", "tolerance band", "threshold rule", "comparator".
 - Never state a cause or conclusion as definitive unless every available signal points the same way with no exceptions. Use hedged language by default: "looks Android-specific", "likely", "suggests", "points toward". Reserve "is" and "confirms" only when evidence is unambiguous and multiple independent signals agree.
 - Primary driver field: one plain English sentence. No stage numbers, no column names. If cause is unknown, name the most likely suspect and state why it cannot be confirmed. Examples: "Likely push notification quality — data unavailable to confirm." / "Install mix shifted toward lower-retention paid channels." / "No clear cause — all measurable signals were stable."
-- **Partial-baseline rule.** When `compare_to_baseline` returns `baseline_meta.partial_window: true`, the trailing window had fewer days of data than requested (e.g. 5 of 7). The "vs 7-day rolling" row must spell this out — append `— PARTIAL (n of 7 days)` to the row, and weaken the severity badge by one step (alert → flag, flag → normal, rise_alert → rise_flag, rise_flag → normal). A 5-of-7 mean is materially noisier than a full-7 mean and a confident severity verdict on top of it is misleading.
+- **Thin-baseline rule.** When `compare_to_baseline` returns `baseline_meta.n_observations < 4` on the stable baseline, the day-of-week group has very few data points and the mean is unreliable. Append `— THIN BASELINE (n=<n_observations>)` to the "vs Typical <Weekday>" row and treat the severity verdict as indicative only — state this explicitly in the Diagnosis. Four or more observations is sufficient; below four, do not state the severity with confidence. (Note: the rolling7 baseline still carries `partial_window` in its metadata — that flag applies to the "vs Last 7 Days" row only and does not affect the severity badge, which is driven by the stable baseline.)
 - **Signal-errors rule.** When `compute_signals_for_day` returns a non-empty `signal_errors` dict, any signal listed there could NOT be computed — its value in `signals` is null because of a tool failure, not because the metric did not move. Do NOT cite such a signal as "flat" or "stable". Either cite the failure as a data gap (`opt-in: n/a — <reason from signal_errors>`) or omit the line entirely. Mixing "could not compute" with "did not move" is the most common way to write a wrong diagnosis.
 
 ### Part 2 — Diagnosis (free-form)
@@ -253,7 +255,7 @@ Below the card, write the sections in order. All sections follow the output lang
 
 2. **Evidence** — three subsections in order:
 
-   **Acquisition** — bullet list. One bullet per source (total, organic, paid, WTA, others) checked against its 7-day average. If any source is running significantly above normal, flag it as a possible suppressor of organic D1 — medium-to-low probability, stated as a suspicion not a conclusion. The more sources spiking, the stronger the suspicion. If all sources are at or below normal, one bullet stating acquisition mix is not the driver. Never reference misattribution mechanics. Do not speculate beyond what the numbers show.
+   **Acquisition** — bullet list. One bullet per source (total, organic, paid, WTA, others) checked against its 7-day average. (Per-source acquisition uses a 7-day trailing comparison deliberately — acquisition mix moves faster than D1 and a stable weekday baseline would smooth out the short spikes that are the actual signal here.) If any source is running significantly above normal, flag it as a possible suppressor of organic D1 — medium-to-low probability, stated as a suspicion not a conclusion. The more sources spiking, the stronger the suspicion. If all sources are at or below normal, one bullet stating acquisition mix is not the driver. Never reference misattribution mechanics. Do not speculate beyond what the numbers show.
 
    **D0 Experience** — bullet list. One bullet per signal: plain English name, value, delta vs last 7 days, one-word judgment (stable / improving / declining). Format: "[Signal name]: [value], [delta] vs last 7 days — [judgment]." If the dictionary flags a signal as not cohort-specific (all-DAU), add: "this measures all users, not just the new install cohort — treat as directional only." If a signal is unavailable, skip it entirely.
 
