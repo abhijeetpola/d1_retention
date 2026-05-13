@@ -102,7 +102,7 @@ compute_rolling_average(metric="d1_corrected", platform="android",
 
 **What it does**
 
-For one flagged date, return the 8-step diagnostic signals so the LLM does not have to derive them. The signals are vs the trailing 7-day mean ending the day BEFORE the cohort day (= date − 1 for D1) so they describe what changed for the cohort behind that day's D1.
+For one flagged date, return the 8-step diagnostic signals so the LLM does not have to derive them. `date` is the install cohort day (the day users installed). D1 signals describe what changed for that cohort; return day is date + 1.
 
 **Parameters**
 

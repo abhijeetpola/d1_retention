@@ -24,3 +24,6 @@ __pycache__/
 
 # uv
 .python-version
+
+# PM-local notes (commit conventions, session notes) — not for the shared repo
+.pm/

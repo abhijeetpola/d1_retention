@@ -19,9 +19,9 @@ from tools.compute_rolling_average import compute_rolling_average
 @server.tool(
     description=(
         "For one flagged date, return the 8-step diagnostic signals so the "
-        "LLM does not have to derive them. The signals are vs the trailing "
-        "7-day mean ending the day BEFORE the cohort day (= date − 1 for D1) "
-        "so they describe what changed for the cohort behind that day's D1. "
+        "LLM does not have to derive them. `date` is the install cohort day "
+        "(the day users installed). D1 signals describe what changed for that "
+        "cohort; return day is date + 1. "
         "Returns {ok, date, d1_cohort_day, platform, acquisition_source, "
         "signals: {platform_d1_delta_pp, ios_d1_delta_pp, "
         "pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, "
@@ -44,7 +44,7 @@ def compute_signals_for_day(
     if pd.isna(target):
         return {"ok": False, "error": f"date not parseable: {date!r}"}
 
-    cohort = target - pd.Timedelta(days=1)
+    cohort = target
 
     df = get_rows(platform=platform, acquisition_source=acquisition_source)
     cohort_row = df[df["date"] == cohort]
@@ -223,7 +223,7 @@ def compute_signals_for_day(
         "notes": [
             "platform_d1_delta_pp = today's D1 (return-aligned) vs trailing 7-day mean.",
             "ios_d1_delta_pp = same-day iOS comparator for the platform-check rule.",
-            "D0 deltas are evaluated on d1_cohort_day (= date − 1).",
+            "D0 deltas are evaluated on d1_cohort_day (= date, the install day).",
             "d0_uninstall_rate is Android-only (iOS does not provide this signal).",
             "installs_ratio compares cohort-day installs to the trailing 7-day mean.",
             "If a signal is null AND has an entry in signal_errors, treat as 'could not compute', not 'did not move'.",
