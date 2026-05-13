@@ -130,7 +130,7 @@ compute_signals_for_day(date="2026-04-02",
 
 **What it does**
 
-Compute the stable baseline for `metric` on the chosen segment. Methodology: take all values from `baseline_start_date` up to the latest available date; optionally restrict to one weekday (Monday through Sunday); optionally remove IQR outliers (Q1−1.5×IQR, Q3+1.5×IQR). Returns the mean of clean values. Defaults match the PM's documented methodology. weekday accepts case-insensitive names like 'monday' or None for all.
+Compute the stable baseline for `metric` on the chosen segment. Methodology: take all values from `baseline_start_date` up to `baseline_end_date` (exclusive upper bound — pass the day before the target date so the target is never included in its own baseline); optionally restrict to one weekday (Monday through Sunday); optionally remove IQR outliers (Q1−1.5×IQR, Q3+1.5×IQR). Returns the mean of clean values. Defaults match the PM's documented methodology. weekday accepts case-insensitive names like 'monday' or None for all. baseline_end_date defaults to None (no upper bound) — always pass it when comparing to a specific date.
 
 **Parameters**
 
@@ -141,6 +141,7 @@ Compute the stable baseline for `metric` on the chosen segment. Methodology: tak
 | `acquisition_source` | string | yes | — |  |
 | `weekday` | string | no | — |  |
 | `baseline_start_date` | string | no | `'2026-01-01'` |  |
+| `baseline_end_date` | string | no | — |  |
 | `exclude_outliers_iqr` | boolean | no | `True` |  |
 
 **Return shape**

@@ -26,12 +26,15 @@ _WEEKDAY_INDEX = {
 @server.tool(
     description=(
         "Compute the stable baseline for `metric` on the chosen segment. "
-        "Methodology: take all values from `baseline_start_date` up to the "
-        "latest available date; optionally restrict to one weekday (Monday "
-        "through Sunday); optionally remove IQR outliers (Q1−1.5×IQR, "
-        "Q3+1.5×IQR). Returns the mean of clean values. "
-        "Defaults match the PM's documented methodology. "
+        "Methodology: take all values from `baseline_start_date` up to "
+        "`baseline_end_date` (exclusive upper bound — pass the day before the "
+        "target date so the target is never included in its own baseline); "
+        "optionally restrict to one weekday (Monday through Sunday); optionally "
+        "remove IQR outliers (Q1−1.5×IQR, Q3+1.5×IQR). Returns the mean of "
+        "clean values. Defaults match the PM's documented methodology. "
         "weekday accepts case-insensitive names like 'monday' or None for all. "
+        "baseline_end_date defaults to None (no upper bound) — always pass it "
+        "when comparing to a specific date. "
         "Returns {ok, metric, platform, acquisition_source, weekday, "
         "baseline_start_date, baseline, n_observations, outliers_removed}."
     )
@@ -42,6 +45,7 @@ def compute_stable_baseline(
     acquisition_source: str,
     weekday: str | None = None,
     baseline_start_date: str = "2026-01-01",
+    baseline_end_date: str | None = None,
     exclude_outliers_iqr: bool = True,
 ) -> dict[str, Any]:
     err = validate_segment(platform, acquisition_source)
@@ -55,10 +59,20 @@ def compute_stable_baseline(
             "error": f"baseline_start_date not parseable: {baseline_start_date!r}",
         }
 
+    end: pd.Timestamp | None = None
+    if baseline_end_date is not None:
+        end = pd.to_datetime(baseline_end_date, errors="coerce")
+        if pd.isna(end):
+            return {
+                "ok": False,
+                "error": f"baseline_end_date not parseable: {baseline_end_date!r}",
+            }
+
     df = get_rows(
         platform=platform,
         acquisition_source=acquisition_source,
         date_from=start,
+        date_to=end,
     )
     if metric not in df.columns:
         return {"ok": False, "error": f"unknown metric: {metric!r}"}

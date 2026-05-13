@@ -78,6 +78,7 @@ def compare_to_baseline(
             platform=platform,
             acquisition_source=acquisition_source,
             weekday=weekday_name,
+            baseline_end_date=str((target_date - pd.Timedelta(days=1)).date()),
         )
         if not bl.get("ok"):
             return bl
