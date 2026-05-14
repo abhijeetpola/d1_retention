@@ -114,7 +114,7 @@ For one flagged date, return the 8-step diagnostic signals so the LLM does not h
 
 **Return shape**
 
-Returns {ok, date, d1_cohort_day, platform, acquisition_source, signals: {platform_d1_delta_pp, ios_d1_delta_pp, pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, d0_uninstall_rate_delta_pp, avg_engagement_time_delta_pct, installs_ratio, weekday}, raw: {today, trailing_mean}}. Each *_delta_pp is in percentage points; installs_ratio compares cohort-day installs to the trailing 7-day mean (1.5 = installs spike).
+Returns {ok, date, return_day, platform, acquisition_source, signals: {platform_d1_delta_pp, ios_d1_delta_pp, pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, d0_uninstall_rate_delta_pp, avg_engagement_time_delta_pct, installs_ratio, weekday}, raw: {today, trailing_mean}}. Each *_delta_pp is in percentage points; installs_ratio compares cohort-day installs to the trailing 7-day mean (1.5 = installs spike).
 
 **Worked example (copy this, edit values, paste into the playbook)**
 

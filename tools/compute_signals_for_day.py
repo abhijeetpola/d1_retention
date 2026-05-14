@@ -22,7 +22,7 @@ from tools.compute_rolling_average import compute_rolling_average
         "LLM does not have to derive them. `date` is the install cohort day "
         "(the day users installed). D1 signals describe what changed for that "
         "cohort; return day is date + 1. "
-        "Returns {ok, date, d1_cohort_day, platform, acquisition_source, "
+        "Returns {ok, date, return_day, platform, acquisition_source, "
         "signals: {platform_d1_delta_pp, ios_d1_delta_pp, "
         "pct_d0_notification_opt_in_delta_pp, pct_d0_login_delta_pp, "
         "d0_uninstall_rate_delta_pp, avg_engagement_time_delta_pct, "
