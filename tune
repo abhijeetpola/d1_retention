@@ -43,8 +43,8 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.rule import Rule
 
 app = typer.Typer(no_args_is_help=False, add_completion=False, rich_markup_mode="rich")
-console = Console()
-err_console = Console(stderr=True)
+console = Console(force_terminal=True)
+err_console = Console(stderr=True, force_terminal=True)
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 PLAYBOOK_PATH = PROJECT_ROOT / "d1-retention-analysis.md"
@@ -148,7 +148,7 @@ def run(
         ),
     ),
     no_open: bool = typer.Option(
-        False,
+        True,
         "--no-open",
         help="Do not auto-open the report in the default Markdown viewer.",
     ),
