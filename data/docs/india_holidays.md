@@ -2,7 +2,7 @@
 # Indian public holidays — Aug 2025 to Apr 2026
 
 This file lists the major public holidays in India that fall inside the
-window of `sheets/d1_retention.csv` (data starts 2025-05-01). Use it when
+window of `sheets/app_health_daily.csv` (data starts 2025-05-01). Use it when
 interpreting D1 dips that fall on or near these dates — holidays often:
 
 - Compress news consumption: people are home with family, attention is on

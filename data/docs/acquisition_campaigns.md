@@ -2,7 +2,7 @@
 # Acquisition campaigns — paid marketing log
 
 A short log of paid-acquisition pushes inside the window of
-`sheets/d1_retention.csv`. Use this to explain spikes in `installs` and
+`sheets/app_health_daily.csv`. Use this to explain spikes in `installs` and
 `d0_uninstalls` on the `paid`, `WTA`, and `others` rows of the per-source
 sheet.
 
@@ -17,7 +17,7 @@ samples — replace with real campaigns.
 | `End date` | Day the campaign ended (or "ongoing") |
 | `Campaign` | Internal name |
 | `Channel` | Where the spend ran (Google UAC, Meta, X, YouTube, OEM, etc.) |
-| `Acquisition source label` | How the source appears in `d1_retention.csv` (`paid` / `WTA` / `others`) |
+| `Acquisition source label` | How the source appears in `app_health_daily.csv` (`paid` / `WTA` / `others`) |
 | `Budget tier` | small / medium / large (relative to typical week) |
 | `Expected D1` | What the team expected for that cohort |
 
@@ -39,7 +39,7 @@ useful action items come from campaigns that ran as planned but
 under-delivered on retention.
 
 If you have access to the per-source breakdown (load the full sheet via
-`load_file('sheets/d1_retention.csv')`), the cleanest comparison is:
+`load_file('sheets/app_health_daily.csv')`), the cleanest comparison is:
 campaign-window paid D1 vs paid D1 in the prior 7 quiet days.
 
 ## Marketing instructions for maintaining
@@ -48,6 +48,6 @@ campaign-window paid D1 vs paid D1 in the prior 7 quiet days.
 - Campaigns that ran for under 3 days can be skipped unless they had
   outsized spend.
 - `Source label` must match exactly how the campaign was tagged in the
-  attribution provider — that is what shows up in `d1_retention.csv`.
+  attribution provider — that is what shows up in `app_health_daily.csv`.
 - Date format: `YYYY-MM-DD`. For ongoing campaigns, use `ongoing`.
 - Drop rows older than the data window when the sheet is refreshed.

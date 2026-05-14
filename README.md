@@ -66,7 +66,6 @@ If `./tune doctor` says everything is fine, you're ready.
    - calls Claude (you'll see a spinner with elapsed time ticking up)
    - renders the final report inline in your Terminal
    - writes the report into outputs/<today>-d1-retention-analysis.md
-   - auto-opens it in your default Markdown viewer
 
 6. Read the report. Decide what's still vague, what you'd want pivoted,
    what new hypothesis to test. Edit the prose again. Repeat.
@@ -161,7 +160,7 @@ The LLM picks up a tool reference when you write it as a function-call signature
 
 2. **Use imperative voice.** "Call `compute_X(...)` to get Y" or "**Call** `compute_X(...)` first" lands as an instruction. Conditional or hedging language ("you might call X if you want") lands as optional. If a step in the diagnostic should always run, write it as a command.
 
-3. **Use named placeholders for values that depend on the run.** Where the value comes from the PM's query at run time, write a placeholder instead of a literal: `compute_signals_for_day(date=d1_cohort_day, platform="android", acquisition_source="organic")`. The LLM resolves `d1_cohort_day` against the date convention defined near the top of the playbook. The same goes for `<segment.platform>` and `<segment.source>` if you want the call to follow whatever segment the PM is asking about.
+3. **Use named placeholders for values that depend on the run.** Where the value comes from the PM's query at run time, write a placeholder instead of a literal: `compute_signals_for_day(date=cohort_day, platform="android", acquisition_source="organic")`. The LLM resolves `cohort_day` against the date convention defined near the top of the playbook. The same goes for `<segment.platform>` and `<segment.source>` if you want the call to follow whatever segment the PM is asking about.
 
 Place the call where in the flow you want it to fire. A line in Stage 1 fires before Stage 2 numbers. A line in "Report shape" fires only when the LLM is building the card. The LLM follows the structure of your prose.
 
@@ -304,7 +303,7 @@ uv run python generate_catalog.py
 Before walking the diagnostic, get a read on whether the segment is growing
 or shrinking on the cohort day:
 
-Call `compute_install_to_dau_ratio(date=d1_cohort_day, platform="android",
+Call `compute_install_to_dau_ratio(date=cohort_day, platform="android",
 acquisition_source="organic")`.
 
 If `ratio < 0.05`, the cohort is small relative to the active base — D1 is
@@ -342,7 +341,6 @@ Or use VS Code's Source Control panel to see line-level diffs visually.
 | `./tune --dry-run` | Show the prompt that would be sent. Don't call Claude. Useful for sanity checks while you tune the prose. |
 | `./tune --dry-run "your question"` | Same, with the inline question included. Confirm the prompt looks right before paying for a real run. |
 | `./tune --quiet` | Skip the inline report rendering in the terminal (only write the file). |
-| `./tune --no-open` | Don't auto-open the report in your default Markdown viewer (only print inline + write file). |
 | `./tune --refresh` | Force-refresh every registered sheet from Google before this run, ignoring the daily 11:00 AM IST schedule. Use when the source updated mid-day and you want this run to use the latest. |
 
 ### When you run `./tune`, the report is rendered in the Terminal AND written to a file
@@ -352,7 +350,6 @@ After Claude finishes:
 1. The report is **rendered inline** in your Terminal using Markdown formatting (headings, tables, bullets) — you can scroll up and read it without leaving the Terminal.
 2. The file `outputs/<date>-d1-retention-analysis.md` is written to disk.
 3. `outputs/latest.md` (a symlink) is updated to point at the latest run.
-4. Your default Markdown viewer auto-opens the file (suppress with `--no-open`).
 
 ### Two ways to use the inline-question feature
 

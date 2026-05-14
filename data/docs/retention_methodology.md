@@ -43,7 +43,7 @@ This is why the diagnostic checklist puts the heaviest weight on Stage-2 D0 sign
 
 ## Why thresholds are absolute (pp), not relative (%)
 
-The PM's methodology compares the metric in **percentage points** to the trailing 7-day mean. A 2pp absolute drop on a baseline of 30% is meaningfully different from a 2% relative change. The 2pp / 4pp thresholds were calibrated against this dataset and survived peer review on the TOI analyst project.
+The PM's methodology compares the metric in **percentage points** to the **stable baseline** (day-of-week grouped, IQR-cleaned). A 2pp absolute drop on a baseline of 30% is meaningfully different from a 2% relative change. The 2pp / 4pp thresholds were calibrated against this dataset and survived peer review on the TOI analyst project. The 7-day rolling average is computed alongside as a secondary reference for streak and oscillation rules, but does not set the severity badge.
 
 - 2pp drop → flag, run the diagnostic, build a strong analytical reasoning.
 - 4pp drop → alert, full diagnosis, surface proactively.
@@ -130,7 +130,7 @@ The stable baseline:
 1. Pull all values of the metric from `baseline_start_date` (default `2026-01-01`) up to yesterday.
 2. **Group by day of week** — a Monday baseline uses only past Mondays. D1 varies ~2pp across the week (Friday ~28%, Tuesday ~30% for Android organic).
 3. **Remove outliers using IQR** — values outside `Q1 − 1.5×IQR` or `Q3 + 1.5×IQR` are dropped.
-4. Return the mean of clean values.
+4. For retention rate metrics (`d1`, `d1_corrected`, `d7`, `d7_corrected`, `d30`, `d30_corrected`): return `sum(users) / sum(installs)` across clean rows — cohort-rate aggregation, not mean of daily rates. For all other metrics: return the mean of clean values.
 5. **Fallbacks**: fewer than 4 observations for that weekday → use all weekdays. Fewer than 8 total values → skip outlier removal.
 
 ### Why `2026-01-01`

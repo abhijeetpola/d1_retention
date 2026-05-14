@@ -26,7 +26,7 @@ uv sync
 ./tune
 ```
 
-This reads `d1-retention-analysis.md` (the playbook) and writes a report to `outputs/`. The report opens automatically; the latest one is always at `outputs/latest.md`.
+This reads `d1-retention-analysis.md` (the playbook) and writes a report to `outputs/`. The latest report is always at `outputs/latest.md`.
 
 You can also pass a question:
 

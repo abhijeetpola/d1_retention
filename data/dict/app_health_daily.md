@@ -8,7 +8,7 @@ Reference for what each column means. Use this to interpret numbers and to decid
 ## Sheet structure & key conventions
 
 - One row per **(date × platform × acquisition_source)**.
-- T-1 basis: April 19 row contains April 18 data.
+- **Return-aligned retention columns only** (`d1`, `d7`, `d30`): the April 19 row contains the cohort that installed April 18 and returned April 19. All other columns (`installs`, `dau`, opt-in, engagement, etc.) reflect April 19 directly. `d1_corrected`, `d7_corrected`, `d30_corrected` are install-aligned — the April 19 row's corrected value is for the April 19 install cohort.
 - `acquisition_source = 'All'` is a **pre-calculated aggregate**, not a sum of the others. Always use `acquisition_source = 'All'` (or filter to a specific source). Do not add organic + paid + WTA + others.
 - Rows with `#DIV/0!` = zero installs in that cohort. Treat as null.
 - `installs` is **activated installs** — counted when a user installs AND opens the app. Not raw Play Store / App Store downloads.
@@ -19,7 +19,7 @@ Reference for what each column means. Use this to interpret numbers and to decid
 |---|---|
 | `date` | UTC date the row describes. |
 | `platform` | `android` or `ios`. |
-| `acquisition_source` | `organic`, `paid`, `WTA` (whatsapp-to-app), `others`, or `All` (aggregate). |
+| `acquisition_source` | `organic`, `paid`, `WTA` (web-to-app), `others`, or `All` (aggregate). |
 | `week`, `month` | Week / month the date falls into. |
 
 ## Volume metrics
@@ -39,7 +39,7 @@ For row dated **April 16**:
 - `d7` = D7 of the April 9 cohort (installed Apr 9, returned Apr 16).
 - `d30` = D30 of the March 17 cohort.
 
-So a *low `d1` on `date`* really points at the *cohort that arrived `date − 1`*. When investigating an Apr 16 dip, the cohort to scrutinise is **Apr 15** (`d1_cohort_day`).
+So a *low `d1` on `date`* really points at the *cohort that arrived `date − 1`*. When investigating an Apr 16 dip, the cohort to scrutinise is **Apr 15** (the install cohort).
 
 ## Retention rates — install-date aligned (`d1_corrected`, `d7_corrected`, `d30_corrected`)
 

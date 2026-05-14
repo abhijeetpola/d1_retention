@@ -2,7 +2,7 @@
 # Known incidents — push, login, crashes
 
 A short log of infra and app-level incidents in the window of
-`sheets/d1_retention.csv`. Use this to distinguish a D1 dip caused by an
+`sheets/app_health_daily.csv`. Use this to distinguish a D1 dip caused by an
 outage (one-day measurement artefact) from one caused by product or
 acquisition changes (a real signal worth investigating).
 
@@ -32,10 +32,9 @@ samples — replace with real incidents from your incident tracker.
 ## How to use this file
 
 If a flagged dip date matches an incident row above, cite the incident in
-the "Caveats" section and **discount the raw `d1` for that day** — use
-`d1_corrected` or the trailing-7-day mean instead. If the dip is far
-larger than typical for the incident type, call it out — there may be a
-secondary cause stacked on top.
+the "Caveats" section — it may explain a D1 dip that isn't a product signal.
+If the dip is far larger than typical for the incident type, call it out —
+there may be a secondary cause stacked on top.
 
 ## Oncall instructions for maintaining
 

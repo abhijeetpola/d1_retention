@@ -2,7 +2,7 @@
 # Product release log — what shipped when
 
 A short log of app releases, feature flags, A/B tests, and push-scheduler
-changes inside the window of `sheets/d1_retention.csv`. Use this to explain
+changes inside the window of `sheets/app_health_daily.csv`. Use this to explain
 step-changes in retention that don't line up with external news.
 
 This file is **eng/PM-maintained**. The rows below are illustrative

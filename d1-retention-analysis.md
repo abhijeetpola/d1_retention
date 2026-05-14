@@ -76,15 +76,15 @@ When the PM names a date, treat it as the **install cohort day** — the day use
 
 **Where each diagnostic step lives:**
 - Stage-1 platform check → `compute_signals_for_day(date=cohort_day, ...)` — uses `d1_corrected` for the cohort day directly.
-- Stage-1 acquisition mix shift → on the **cohort day** (WTA / paid / others install volume).
+- Stage-1 acquisition mix shift → on the **cohort day** (organic / WTA / paid / others install volume).
 - Stage-2 D0 signals (opt-in, login, uninstall, engagement) → all on the **cohort day**.
 - Stage-3 hook / news → check both the **cohort day** (D0 news) and the **return day** (D1 news).
 
-**Metric to cite in the headline:** always `dx_corrected[cohort_day]` — install-aligned, the correct retention lens. Never cite raw `dx` — it measures a different cohort and will confuse the reader.
+**Metric to cite in the headline:** always `dx_corrected[cohort_day]` — install-aligned, the correct retention lens.
 
 These rules apply for every `(platform, acquisition_source)` segment, not only the Android organic default. If the PM asks about iOS or any non-organic source, the priority metric is still `dx_corrected[cohort_day]`.
 
-**Forcing rule — call `d1_corrected` first, every run.** Before you build the status card, your **first** baseline call must be `compare_to_baseline(date=cohort_day, metric="d1_corrected", platform=..., acquisition_source=..., baseline_kind="stable")`. If that call returns `ok=false` or a null/blank value, state that this cohort's data is not yet complete, then identify the most recent cohort day that has complete `d1_corrected` data and run the full analysis on that cohort. The "vs Last 7 Days" and "vs Typical <Weekday>" rows must use the same metric (`d1_corrected`) as the headline.
+**Forcing rule — call `d1_corrected` first, every run.** Before you build the status card, your **first** baseline call must be `compare_to_baseline(date=cohort_day, metric="d1_corrected", platform=..., acquisition_source=..., baseline_kind="stable")`. If that call returns `ok=false` or a null/blank value, state that this cohort's data is not yet complete, then identify the most recent cohort day that has complete `d1_corrected` data and run the full analysis on that cohort. The "vs Last 7 Days" and "vs <Weekday> average" rows must use the same metric (`d1_corrected`) as the headline.
 
 ## The three-stage retention framework
 
@@ -137,7 +137,7 @@ Compare same-day D1 movement on Android vs iOS.
 The signal: `signals.platform_d1_delta_pp` (this segment) vs `signals.ios_d1_delta_pp` (iOS comparator).
 
 **2. Acquisition mix shift.**
-Did WTA, paid, or others volume spike on the cohort day?
+Did organic, WTA, paid, or others volume spike or drop on the cohort day?
 WTA users are lower-intent. When WTA spikes, some installs get misattributed as organic, dragging apparent organic D1 down even if true organic quality is unchanged. Cite when the data shows a spike AND organic D1 softened — but keep it proportionate. If a more direct D0 signal is moving (steps 3–6), that leads.
 
 **Call `compute_acquisition_mix_shift(date=cohort_day, platform="android")`** to get the exact share deltas and install-volume ratios per source. Read `share_delta_pp` (in percentage points) and `installs_ratio_vs_baseline` (1.0 = flat) for `organic`, `paid`, `WTA`, `others`, plus `biggest_mover` for the lead. Do NOT load the full sheet to compute these by hand — the tool already does the math.
@@ -146,7 +146,7 @@ WTA users are lower-intent. When WTA spikes, some installs get misattributed as 
 
 **3. D0 notification opt-in rate.**
 Most powerful leading indicator. No opt-in = no push reach on D1.
-Signal: `signals.pct_d0_notification_opt_in_delta_pp` (evaluated on `d1_cohort_day`).
+Signal: `signals.pct_d0_notification_opt_in_delta_pp` (evaluated on `date`, the install day).
 
 **4. D0 session quality.** *(approximate — see data gaps in `dict/app_health_daily.md`; engagement metrics are all-DAU, not new-install-cohort-specific.)*
 Did `avg_engagement_time_per_user` drop on the cohort day?
@@ -192,7 +192,7 @@ Default headline if the PM's query is silent: **Android organic** (per the syste
 
 After the diagnostic, decide whether external context could explain the verdict:
 
-- News-driven? Load `docs/major_events.md` to check for high-significance events on `d1_cohort_day` or `date`.
+- News-driven? Load `docs/major_events.md` to check for high-significance events on `date` (cohort day) and `return_day`.
 - Holiday-driven? Load `docs/india_holidays.md`.
 - Infra outage? Load `docs/known_incidents.md`.
 - Recent product change? Load `docs/product_release_log.md`.
@@ -216,7 +216,7 @@ Open the report with a one-line severity banner, then a 6-row table. Every repor
 | Cohort / segment    | <YYYY-MM-DD install cohort> · <platform> · <acquisition_source>   |
 | D1 Retention        | <value%>                                                          |
 | vs Last 7 Days      | <±X.XXpp> (avg <value%>)                                          |
-| vs Typical <Weekday>| <±X.XXpp> (avg <value%>) — basis for <🔴/🟡/🟢> <ALERT/FLAG/NORMAL/RISE FLAG/RISE ALERT> |
+| vs <Weekday> average| <±X.XXpp> (avg <value%>) — basis for <🔴/🟡/🟢> <ALERT/FLAG/NORMAL/RISE FLAG/RISE ALERT> |
 | Primary driver      | <plain English one-sentence cause — see output rules below>       |
 | iOS comparison      | <±X.XXpp> (<iOS direction in plain English> → <looks segment-specific | likely external | unclear>) |
 ```
@@ -235,16 +235,19 @@ Open the report with a one-line severity banner, then a 6-row table. Every repor
 
 **Card field discipline:**
 - Every numeric value must come from a tool return, not your own arithmetic.
-- The "D1 Retention", "vs Last 7 Days", and "vs Typical <Weekday>" rows must all use the same metric — `d1_corrected[cohort_day]` if available, else raw `d1`. Never mix metrics across these three rows. (See the Forcing rule above.)
+- The "D1 Retention", "vs Last 7 Days", and "vs <Weekday> average" rows must all use `d1_corrected`. Never mix metrics across these three rows. (See the Forcing rule above.)
 - If a field is genuinely unknown or not yet computable, write `data not available` — do not omit the row silently.
 - Keep the card to exactly these 6 rows. Do not add rows. The whole point is consistency across runs.
 
 **Output language rules (apply to the entire report, not just the card):**
 - Never use column names (`d1_corrected`, `pct_d0_notification_opt_in`, `avg_engagement_time_per_user`, etc.) anywhere in the output. Use plain English names: "D1 Retention", "Day 0 notification opt-in", "average session time", etc.
-- Never use internal framework terms: Stage 1 / Stage 2 / Stage 3, "hook", "rolling-7", "IQR-clean", "tolerance band", "threshold rule", "comparator".
-- Never state a cause or conclusion as definitive unless every available signal points the same way with no exceptions. Use hedged language by default: "looks Android-specific", "likely", "suggests", "points toward". Reserve "is" and "confirms" only when evidence is unambiguous and multiple independent signals agree.
+- Never use internal framework terms anywhere in prose: Stage 1 / Stage 2 / Stage 3, "hook", "rolling-7", "IQR-clean", "tolerance band", "threshold rule", "comparator", "baseline", "rolling average", "flagged", "alert" (outside the badge), "pp" (write "percentage points" or rephrase as plain English).
+- Never use system-verdict language in narrative prose. "Flagged" and "alert" are badge labels — they belong in the status card only. In prose, describe what actually happened: "D1 was soft", "D1 fell below typical", "D1 recovered", not "D1 was flagged / alerted". When citing a multi-day pattern, name the dates and what the number did — do not list badge labels.
+- Never write delta values with signs and units in prose (e.g. "+6.53pp", "−4.71pp vs rolling"). Write them as plain English: "rose sharply", "fell 5 points below the typical Monday level", "recovered to near-normal". Numbers in the card are fine; numbers in prose should be embedded in a sentence a non-analyst can read.
+- Never state a cause or conclusion as definitive unless every available signal points the same way. Use hedged language by default: "looks Android-specific", "likely", "suggests", "points toward". Reserve "is" and "confirms" only when evidence is unambiguous and multiple independent signals agree.
 - Primary driver field: one plain English sentence. No stage numbers, no column names. If cause is unknown, name the most likely suspect and state why it cannot be confirmed. Examples: "Likely push notification quality — data unavailable to confirm." / "Install mix shifted toward lower-retention paid channels." / "No clear cause — all measurable signals were stable."
-- **Thin-baseline rule.** When `compare_to_baseline` returns `baseline_meta.n_observations < 4` on the stable baseline, the day-of-week group has very few data points and the mean is unreliable. Append `— THIN BASELINE (n=<n_observations>)` to the "vs Typical <Weekday>" row and treat the severity verdict as indicative only — state this explicitly in the Diagnosis. Four or more observations is sufficient; below four, do not state the severity with confidence. (Note: the rolling7 baseline still carries `partial_window` in its metadata — that flag applies to the "vs Last 7 Days" row only and does not affect the severity badge, which is driven by the stable baseline.)
+- **Streak-leads rule.** When D1 has been consistently soft (or consistently strong) across multiple recent same-weekdays or consecutive days, the streak is the headline — not the single cohort day. Open the Primary driver field with the streak: "D1 has been running below the Monday average for N weeks" or "D1 has been soft for N consecutive days." Single-day detail follows as supporting context only. Use `flag_dip_days` or `compute_rolling_average` to confirm the pattern before citing it.
+- **Thin-baseline rule.** When `compare_to_baseline` returns `baseline_meta.n_observations < 4` on the stable baseline, the day-of-week group has very few data points and the mean is unreliable. Append `— THIN BASELINE (n=<n_observations>)` to the "vs <Weekday> average" row and treat the severity verdict as indicative only — state this explicitly in the Diagnosis. Four or more observations is sufficient; below four, do not state the severity with confidence. (Note: the rolling7 baseline still carries `partial_window` in its metadata — that flag applies to the "vs Last 7 Days" row only and does not affect the severity badge, which is driven by the stable baseline.)
 - **Signal-errors rule.** When `compute_signals_for_day` returns a non-empty `signal_errors` dict, any signal listed there could NOT be computed — its value in `signals` is null because of a tool failure, not because the metric did not move. Do NOT cite such a signal as "flat" or "stable". Either cite the failure as a data gap (`opt-in: n/a — <reason from signal_errors>`) or omit the line entirely. Mixing "could not compute" with "did not move" is the most common way to write a wrong diagnosis.
 
 ### Part 2 — Diagnosis (free-form)
